@@ -22,7 +22,7 @@ def rc_car_control():
         time.sleep(duration)
         motor.stop()
 
-    print("RC Car Control Ready. Enter commands in the following format:")
+    print("Motor test ready. Enter commands in the following format:")
     print("motor_name power duration")
     print("motor_name can be 'left', 'right', or 'head'")
     print("power is a float between -1 and 1 (-1 for full reverse, 1 for full forward)")
@@ -72,7 +72,7 @@ def rc_car_control():
         print(f"An error occurred: {e}")
     finally:
         stop()
-        print("RC Car Control stopped.")
+        print("Motor test stopped.")
 
 if __name__ == "__main__":
     rc_car_control()
