@@ -30,7 +30,7 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 head_motor = Motor(forward=5, backward=6, enable=26)
 
 # Parameters for head movement
-TURN_SPEED = 0.8
+TURN_SPEED = 0.1
 current_angle = 0
 movement_command = None
 movement_start_time = 0
