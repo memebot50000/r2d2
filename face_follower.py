@@ -38,22 +38,28 @@ head_motor = Motor(forward=5, backward=6, enable=26)
 # Global variables for motor control
 face_detected = False
 face_position = 0  # 0 for center, negative for left, positive for right
+last_face_position = 0
+motor_direction = 1  # 1 for right, -1 for left
 
 def motor_control():
-    global face_detected, face_position
+    global face_detected, face_position, last_face_position, motor_direction
     print("Motor control thread started")
     while True:
         if face_detected:
-            if face_position < -50:  # Face is on the left side
-                head_motor.value = -0.1  # Move left
-                time.sleep(0.1)
-            elif face_position > 50:  # Face is on the right side
-                head_motor.value = 0.1  # Move right
-                time.sleep(0.1)
+            if abs(face_position) > 30:  # Only move if face is significantly off-center
+                # Determine if we're moving in the right direction
+                if abs(face_position) > abs(last_face_position):
+                    motor_direction *= -1  # Reverse direction if we're moving away from center
+                
+                head_motor.value = 0.1 * motor_direction
+                time.sleep(0.05)  # Move for a shorter time
+                head_motor.stop()
+                
+                last_face_position = face_position
             else:
-                head_motor.stop()  # Face is centered, stop moving
+                head_motor.stop()
         else:
-            head_motor.stop()  # No face detected, stop moving
+            head_motor.stop()
         time.sleep(0.1)  # Small delay to prevent excessive CPU usage
 
 def generate_frames():
@@ -81,6 +87,7 @@ def generate_frames():
             face_position = 0
         
         cv2.putText(frame, f"Face position: {face_position}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(frame, f"Motor direction: {motor_direction}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
