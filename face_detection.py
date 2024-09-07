@@ -3,7 +3,8 @@ import time
 import os
 
 # Specify the path to the Haar Cascade XML file
-cascade_path = "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"
+cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
+
 
 # Check if the file exists
 if not os.path.isfile(cascade_path):
