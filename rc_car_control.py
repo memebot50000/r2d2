@@ -68,15 +68,7 @@ def rc_car_control():
             else:
                 right_motor.stop()
 
-            # Head motor control
-            if abs(head) > 0.1:  # Add a small deadzone
-                if head > 0:
-                    head_motor.forward(abs(head))
-                else:
-                    head_motor.backward(abs(head))
-            else:
-                head_motor.stop()
-
+        
         except ValueError as e:
             print(f"Error controlling motors: {e}")
 
@@ -93,9 +85,7 @@ def rc_car_control():
                     throttle_value = event.value
                 elif event.code == evdev.ecodes.ABS_X:  # Steering
                     steering_value = event.value
-                elif event.code == evdev.ecodes.ABS_RZ:  # Head rotation (assuming it's on this axis)
-                    head_value = event.value
-                control_motors(throttle_value, steering_value, head_value)
+                
 
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
