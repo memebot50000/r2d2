@@ -59,6 +59,13 @@ lk_params = dict(winSize=(15, 15),
                  maxLevel=2,
                  criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
+# ... [previous imports and setup remain the same]
+
+# Add this global variable for calibration
+DIRECTION_CALIBRATION = -1  # Set to -1 to reverse the direction, 1 for original direction
+
+# ... [other global variables remain the same]
+
 def motor_control():
     global face_detected, face_position, last_known_face_position, frames_without_face, flow_direction
     print("Motor control thread started")
@@ -66,7 +73,8 @@ def motor_control():
         if face_detected:
             frames_without_face = 0
             if abs(face_position) > 30:  # Only move if face is significantly off-center
-                head_motor.value = 0.1 * flow_direction * (-1 if face_position < 0 else 1)
+                # Use DIRECTION_CALIBRATION here
+                head_motor.value = 0.1 * DIRECTION_CALIBRATION * flow_direction * (-1 if face_position < 0 else 1)
                 time.sleep(0.05)  # Move for a shorter time
                 head_motor.stop()
             else:
@@ -77,7 +85,8 @@ def motor_control():
             if frames_without_face > max_frames_without_face:
                 # Try to return to last known position
                 if abs(last_known_face_position) > 10:  # Only move if last known position was off-center
-                    head_motor.value = 0.1 * flow_direction * (-1 if last_known_face_position < 0 else 1)
+                    # Use DIRECTION_CALIBRATION here as well
+                    head_motor.value = 0.1 * DIRECTION_CALIBRATION * flow_direction * (-1 if last_known_face_position < 0 else 1)
                     time.sleep(0.05)
                     head_motor.stop()
                     last_known_face_position = last_known_face_position * 0.9  # Gradually reduce the target position
@@ -142,40 +151,11 @@ def generate_frames():
         cv2.putText(frame, f"Face position: {face_position}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.putText(frame, f"Last known: {last_known_face_position}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.putText(frame, f"Frames without face: {frames_without_face}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(frame, f"Flow direction: {'Right' if flow_direction > 0 else 'Left'}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(frame, f"Flow direction: {'Right' if flow_direction * DIRECTION_CALIBRATION > 0 else 'Left'}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-@app.route('/')
-def index():
-    return """
-    <html>
-    <head>
-        <title>Face Detection Stream</title>
-    </head>
-    <body>
-        <h1>Face Detection Stream</h1>
-        <img src="/video_feed" width="640" height="480" />
-    </body>
-    </html>
-    """
-
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
-
-if __name__ == '__main__':
-    try:
-        print("Initializing motor and starting thread")
-        motor_thread = threading.Thread(target=motor_control, daemon=True)
-        motor_thread.start()
-        print("Motor thread started")
-        app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
-    finally:
-        print("Stopping motor and releasing camera")
-        head_motor.stop()
-        camera.release()
+# ... [rest of the code remains the same]
