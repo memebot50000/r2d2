@@ -42,7 +42,7 @@ def rc_car_control():
         if left_speed == 0.1 or left_speed == -0.1:
             left_speed = 0
         if right_speed == 0.1 or right_speed == -0.1:
-            right speed == 0
+            right_speed == 0
 
         # Control left motor
         if left_speed > 0:
