@@ -38,22 +38,25 @@ head_motor = Motor(forward=5, backward=6, enable=26)
 # Global variables for motor control
 face_detected = False
 motor_direction = 1  # 1 for forward, -1 for backward
+interval_count = 0
 
 def motor_control():
-    global face_detected, motor_direction
+    global face_detected, motor_direction, interval_count
     while True:
         if not face_detected:
-            head_motor.value = 0.05 * motor_direction
-            time.sleep(4.4)
-            motor_direction *= -1  # Reverse direction
-            head_motor.value = 0
+            if interval_count < 4:
+                head_motor.value = 0.1 * motor_direction
+                time.sleep(0.275)  # Rotate for 0.275 seconds
+                head_motor.stop()
+                time.sleep(0.825)  # Wait to make up the rest of 1.1 seconds
+                interval_count += 1
+            else:
+                interval_count = 0
+                motor_direction *= -1  # Reverse direction for next set of movements
         else:
             head_motor.stop()
         time.sleep(0.1)  # Small delay to prevent excessive CPU usage
 
-# Start motor control in a separate thread
-motor_thread = threading.Thread(target=motor_control, daemon=True)
-motor_thread.start()
 
 def generate_frames():
     global face_detected
