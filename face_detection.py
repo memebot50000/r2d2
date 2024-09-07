@@ -1,6 +1,9 @@
+from flask import Flask, Response
 import cv2
 import time
 import os
+
+app = Flask(__name__)
 
 # Updated cascade_path
 cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
@@ -22,9 +25,7 @@ if not camera.isOpened():
     print("Error: Could not open camera.")
     exit()
 
-print("Camera initialized. Press Ctrl+C to quit.")
-
-try:
+def generate_frames():
     while True:
         # Capture frame-by-frame
         ret, frame = camera.read()
@@ -39,17 +40,35 @@ try:
         # Detect faces
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
 
-        # If faces are found, print "face recognized"
-        if len(faces) > 0:
-            print("Face recognized")
+        # Draw rectangles around detected faces
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
 
-        # Small delay to prevent excessive CPU usage
-        time.sleep(0.1)
+        # Encode the frame as JPEG
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame = buffer.tobytes()
 
-except KeyboardInterrupt:
-    print("\nScript terminated by user.")
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-finally:
-    # Release the camera
-    camera.release()
-    print("Camera released. Script ended.")
+@app.route('/')
+def index():
+    return """
+    <html>
+    <head>
+        <title>Face Detection Stream</title>
+    </head>
+    <body>
+        <h1>Face Detection Stream</h1>
+        <img src="/video_feed" width="640" height="480" />
+    </body>
+    </html>
+    """
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
