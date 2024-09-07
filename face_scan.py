@@ -42,21 +42,26 @@ interval_count = 0
 
 def motor_control():
     global face_detected, motor_direction, interval_count
+    print("Motor control thread started")  # Debug print
     while True:
         if not face_detected:
+            print(f"No face detected. Interval: {interval_count}, Direction: {motor_direction}")  # Debug print
             if interval_count < 4:
+                print(f"Moving motor: power={0.1 * motor_direction}")  # Debug print
                 head_motor.value = 0.1 * motor_direction
                 time.sleep(0.275)  # Rotate for 0.275 seconds
                 head_motor.stop()
+                print("Motor stopped")  # Debug print
                 time.sleep(0.825)  # Wait to make up the rest of 1.1 seconds
                 interval_count += 1
             else:
                 interval_count = 0
                 motor_direction *= -1  # Reverse direction for next set of movements
+                print(f"Changing direction: {motor_direction}")  # Debug print
         else:
+            print("Face detected, motor stopped")  # Debug print
             head_motor.stop()
         time.sleep(0.1)  # Small delay to prevent excessive CPU usage
-
 
 def generate_frames():
     global face_detected
@@ -70,6 +75,7 @@ def generate_frames():
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
         
         face_detected = len(faces) > 0
+        print(f"Face detected: {face_detected}")  # Debug print
         
         for (x, y, w, h) in faces:
             cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
@@ -100,7 +106,12 @@ def video_feed():
 
 if __name__ == '__main__':
     try:
+        print("Initializing motor and starting thread")  # Debug print
+        motor_thread = threading.Thread(target=motor_control, daemon=True)
+        motor_thread.start()
+        print("Motor thread started")  # Debug print
         app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
     finally:
+        print("Stopping motor and releasing camera")  # Debug print
         head_motor.stop()
         camera.release()
