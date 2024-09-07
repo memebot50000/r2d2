@@ -13,12 +13,12 @@ def find_spektrum_device():
     return None
 
 def normalize(value, min_val, max_val):
-    return (value - min_val) / (max_val - min_val)
+    return 2 * (value - min_val) / (max_val - min_val) - 1
 
 def rc_car_control():
-    left_motor = Motor(forward=27, backward=17, enable=12)  # Swapped forward and backward
+    left_motor = Motor(forward=27, backward=17, enable=12)
     right_motor = Motor(forward=22, backward=23, enable=13)
-    head_motor = Motor(forward=5, backward=6, enable=26)
+    # Head motor control removed as per your request
 
     joystick = find_spektrum_device()
     if not joystick:
@@ -30,62 +30,49 @@ def rc_car_control():
     def stop():
         left_motor.stop()
         right_motor.stop()
-        head_motor.stop()
 
-    def control_motors(throttle_value, steering_value, head_value):
-        throttle = normalize(throttle_value, joystick.absinfo(evdev.ecodes.ABS_Y).min, joystick.absinfo(evdev.ecodes.ABS_Y).max)
-        steering = normalize(steering_value, joystick.absinfo(evdev.ecodes.ABS_X).min, joystick.absinfo(evdev.ecodes.ABS_X).max)
-        head = normalize(head_value, joystick.absinfo(evdev.ecodes.ABS_RZ).min, joystick.absinfo(evdev.ecodes.ABS_RZ).max)
-        
-        throttle = (throttle - 0.5) * 2
-        steering = (steering - 0.5) * 2
-        head = (head - 0.5) * 2
+    def control_motors(throttle, steering):
+        # Differential drive control
+        left_speed = throttle + steering
+        right_speed = throttle - steering
 
-        print(f"Throttle: {throttle:.2f}, Steering: {steering:.2f}, Head: {head:.2f}")  # Debug print
+        # Clamp values between -1 and 1
+        left_speed = max(-1, min(1, left_speed))
+        right_speed = max(-1, min(1, right_speed))
 
-        try:
-            # Differential drive control
-            left_speed = throttle + steering
-            right_speed = throttle - steering
+        # Control left motor
+        if left_speed > 0:
+            left_motor.forward(left_speed)
+        elif left_speed < 0:
+            left_motor.backward(-left_speed)
+        else:
+            left_motor.stop()
 
-            # Clamp values between -1 and 1
-            left_speed = max(-1, min(1, left_speed))
-            right_speed = max(-1, min(1, right_speed))
+        # Control right motor
+        if right_speed > 0:
+            right_motor.forward(right_speed)
+        elif right_speed < 0:
+            right_motor.backward(-right_speed)
+        else:
+            right_motor.stop()
 
-            # Control left motor
-            if left_speed > 0:
-                left_motor.forward(left_speed)
-            elif left_speed < 0:
-                left_motor.backward(-left_speed)
-            else:
-                left_motor.stop()
-
-            # Control right motor
-            if right_speed > 0:
-                right_motor.forward(right_speed)
-            elif right_speed < 0:
-                right_motor.backward(-right_speed)
-            else:
-                right_motor.stop()
-
-        
-        except ValueError as e:
-            print(f"Error controlling motors: {e}")
+        print(f"Left: {left_speed:.2f}, Right: {right_speed:.2f}")  # Debug print
 
     print("RC Car Control Ready. Use the Spektrum controller to control the car. Press Ctrl+C to quit.")
 
-    throttle_value = 0
-    steering_value = 0
-    head_value = 0
+    # Get initial values and capabilities
+    absinfo_y = joystick.absinfo(evdev.ecodes.ABS_Y)
+    absinfo_x = joystick.absinfo(evdev.ecodes.ABS_X)
 
     try:
         for event in joystick.read_loop():
             if event.type == evdev.ecodes.EV_ABS:
                 if event.code == evdev.ecodes.ABS_Y:  # Throttle
-                    throttle_value = event.value
+                    throttle = normalize(event.value, absinfo_y.min, absinfo_y.max)
                 elif event.code == evdev.ecodes.ABS_X:  # Steering
-                    steering_value = event.value
+                    steering = normalize(event.value, absinfo_x.min, absinfo_x.max)
                 
+                control_motors(throttle, steering)
 
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
