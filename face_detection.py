@@ -17,13 +17,17 @@ if not os.path.isfile(cascade_path):
 # Load the pre-trained face detection classifier
 face_cascade = cv2.CascadeClassifier(cascade_path)
 
-# Initialize the camera
-camera = cv2.VideoCapture(0)  # 0 is usually the default camera
+# Initialize the camera with V4L2
+camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 
 # Check if the camera opened successfully
 if not camera.isOpened():
     print("Error: Could not open camera.")
     exit()
+
+# Set camera properties
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 def generate_frames():
     while True:
@@ -71,4 +75,4 @@ def video_feed():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
