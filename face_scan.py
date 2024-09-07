@@ -61,6 +61,7 @@ def motor_control():
         else:
             print("Face detected, motor stopped")  # Debug print
             head_motor.stop()
+            time.sleep(3)
         time.sleep(0.1)  # Small delay to prevent excessive CPU usage
 
 def generate_frames():
