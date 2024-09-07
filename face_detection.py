@@ -1,8 +1,18 @@
 import cv2
 import time
+import os
+
+# Specify the path to the Haar Cascade XML file
+cascade_path = "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"
+
+# Check if the file exists
+if not os.path.isfile(cascade_path):
+    print(f"Error: Cascade file not found at {cascade_path}")
+    print("Please install OpenCV with pre-trained cascades or specify the correct path.")
+    exit()
 
 # Load the pre-trained face detection classifier
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+face_cascade = cv2.CascadeClassifier(cascade_path)
 
 # Initialize the camera
 camera = cv2.VideoCapture(0)  # 0 is usually the default camera
