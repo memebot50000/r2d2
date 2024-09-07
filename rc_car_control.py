@@ -18,7 +18,6 @@ def normalize(value, min_val, max_val):
 def rc_car_control():
     left_motor = Motor(forward=27, backward=17, enable=12)
     right_motor = Motor(forward=22, backward=23, enable=13)
-    # Head motor control removed as per your request
 
     joystick = find_spektrum_device()
     if not joystick:
@@ -63,6 +62,10 @@ def rc_car_control():
     # Get initial values and capabilities
     absinfo_y = joystick.absinfo(evdev.ecodes.ABS_Y)
     absinfo_x = joystick.absinfo(evdev.ecodes.ABS_X)
+
+    # Initialize throttle and steering
+    throttle = 0
+    steering = 0
 
     try:
         for event in joystick.read_loop():
