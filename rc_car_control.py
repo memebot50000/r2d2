@@ -16,8 +16,8 @@ def normalize(value, min_val, max_val):
     return 2 * (value - min_val) / (max_val - min_val) - 1
 
 def rc_car_control():
-    left_motor = Motor(forward=27, backward=17, enable=12)
-    right_motor = Motor(forward=22, backward=23, enable=13)
+    right_motor = Motor(forward=27, backward=17, enable=12)
+    left_motor = Motor(forward=22, backward=23, enable=13)
 
     joystick = find_spektrum_device()
     if not joystick:
@@ -38,6 +38,11 @@ def rc_car_control():
         # Clamp values between -1 and 1
         left_speed = max(-1, min(1, left_speed))
         right_speed = max(-1, min(1, right_speed))
+
+        if left_speed == 0.1 or left_speed == -0.1:
+            left_speed = 0
+        if right_speed == 0.1 or right_speed == -0.1:
+            right speed == 0
 
         # Control left motor
         if left_speed > 0:
