@@ -1,11 +1,10 @@
-from flask import Flask, Response
+from flask import Flask, Response, render_template_string, request
 import cv2
 import numpy as np
 import time
 import os
 from gpiozero import Motor
 import threading
-import random
 
 app = Flask(__name__)
 
@@ -30,11 +29,11 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 # Initialize the head motor
 head_motor = Motor(forward=5, backward=6, enable=26)
 
-# Parameters for random movement
-TURN_RANGE = 30  # Degrees
-TURN_SPEED = 0.1
+# Parameters for head movement
+TURN_SPEED = 0.8
 current_angle = 0
-target_angle = 0
+movement_command = None
+movement_start_time = 0
 
 # Parameters for optical flow
 feature_params = dict(maxCorners=100, qualityLevel=0.3, minDistance=7, blockSize=7)
@@ -46,17 +45,18 @@ prev_frame = None
 prev_points = None
 
 def motor_control():
-    global current_angle, target_angle
+    global current_angle, movement_command, movement_start_time
     while True:
-        if abs(current_angle - target_angle) > 1:
-            direction = 1 if target_angle > current_angle else -1
-            head_motor.value = TURN_SPEED * direction
-            time.sleep(0.05)
-            current_angle += direction * 0.5  # Adjust this value to change turning speed
-            head_motor.stop()
+        current_time = time.time()
+        if movement_command and current_time - movement_start_time < 1:
+            if movement_command == 'left':
+                head_motor.value = -TURN_SPEED
+            elif movement_command == 'right':
+                head_motor.value = TURN_SPEED
         else:
-            target_angle = random.uniform(-TURN_RANGE, TURN_RANGE)
-        time.sleep(0.1)
+            head_motor.stop()
+            movement_command = None
+        time.sleep(0.01)
 
 def generate_frames():
     global prev_frame, prev_points
@@ -106,9 +106,8 @@ def generate_frames():
         
         prev_frame = gray
         
-        # Display current and target angles
-        cv2.putText(frame, f"Current angle: {current_angle:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(frame, f"Target angle: {target_angle:.2f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        # Display current movement command
+        cv2.putText(frame, f"Movement: {movement_command if movement_command else 'None'}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
@@ -117,22 +116,67 @@ def generate_frames():
 
 @app.route('/')
 def index():
-    return """
+    return render_template_string('''
+    <!DOCTYPE html>
     <html>
     <head>
         <title>Face Detection and Optical Flow Stream</title>
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <style>
+            #controls {
+                margin-top: 20px;
+            }
+            .arrow {
+                font-size: 24px;
+                margin: 0 10px;
+                cursor: pointer;
+            }
+        </style>
     </head>
     <body>
         <h1>Face Detection and Optical Flow Stream</h1>
-        <img src="/video_feed" width="640" height="480" />
+        <img src="{{ url_for('video_feed') }}" width="640" height="480" />
+        <div id="controls">
+            <span class="arrow" id="left">&#8592;</span>
+            <span class="arrow" id="right">&#8594;</span>
+        </div>
+        <script>
+            function sendCommand(cmd) {
+                $.post('/control', {command: cmd});
+            }
+            $('#left').click(function() { sendCommand('left'); });
+            $('#right').click(function() { sendCommand('right'); });
+            
+            $(document).keydown(function(e) {
+                switch(e.which) {
+                    case 37: // left arrow
+                        sendCommand('left');
+                        break;
+                    case 39: // right arrow
+                        sendCommand('right');
+                        break;
+                    default: return;
+                }
+                e.preventDefault();
+            });
+        </script>
     </body>
     </html>
-    """
+    ''')
 
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/control', methods=['POST'])
+def control():
+    global movement_command, movement_start_time
+    command = request.form.get('command')
+    if command in ['left', 'right']:
+        movement_command = command
+        movement_start_time = time.time()
+    return 'OK'
 
 if __name__ == '__main__':
     try:
@@ -140,7 +184,7 @@ if __name__ == '__main__':
         motor_thread = threading.Thread(target=motor_control, daemon=True)
         motor_thread.start()
         print("Motor thread started")
-        app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+        app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False, threaded=True)
     finally:
         print("Stopping motor and releasing camera")
         head_motor.stop()
