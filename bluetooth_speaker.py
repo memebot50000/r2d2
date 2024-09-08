@@ -22,13 +22,18 @@ def setup_bluetooth():
     print("Making Pi discoverable...")
     run_command("sudo hciconfig hci0 piscan")
 
-    print("Starting PulseAudio...")
-    # Run PulseAudio as the user 'wvfiv'
-    run_command("su wvfiv -c 'pulseaudio --start --exit-idle-time=-1'")
+    print("Configuring PulseAudio...")
+    pulseaudio_config = """
+    load-module module-bluetooth-policy
+    load-module module-bluetooth-discover
+    load-module module-switch-on-connect
+    """
+    with open('/home/wvfiv/.config/pulse/default.pa', 'a') as f:
+        f.write(pulseaudio_config)
 
-    print("Loading Bluetooth module...")
-    # Run pactl as the user 'wvfiv'
-    run_command("su wvfiv -c 'pactl load-module module-bluetooth-discover'")
+    print("Restarting PulseAudio...")
+    run_command("pulseaudio -k")
+    run_command("pulseaudio --start")
 
     print("Setting persistent Bluetooth name...")
     with open('/etc/machine-info', 'w') as f:
@@ -57,7 +62,7 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("Stopping Bluetooth speaker...")
-        run_command("su wvfiv -c 'pulseaudio --kill'")
+        run_command("pulseaudio -k")
 
 if __name__ == "__main__":
     main()
