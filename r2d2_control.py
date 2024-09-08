@@ -33,7 +33,7 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 # Motor Initialization
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
-head_motor = Motor(forward=5, backward=6, enable=26)
+head_motor = Motor(forward=6, backward=5, enable=26)
 
 # Head Movement Parameters
 TURN_SPEED = 0.1
