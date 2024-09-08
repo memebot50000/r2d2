@@ -6,6 +6,8 @@ import numpy as np
 import os
 import threading
 from flask import Flask, Response, render_template_string, request
+import subprocess
+import random
 
 app = Flask(__name__)
 
@@ -50,6 +52,8 @@ color = np.random.randint(0, 255, (100, 3))
 prev_frame = None
 prev_points = None
 running = True
+audio_lock = threading.Lock()
+audio_process = None
 
 def normalize(value, min_val, max_val):
     return 2 * (value - min_val) / (max_val - min_val) - 1
@@ -65,6 +69,18 @@ def find_spektrum_device():
         if device.info.vendor == SPEKTRUM_VENDOR_ID and device.info.product == SPEKTRUM_PRODUCT_ID:
             return device
     return None
+
+def play_audio(file_path, duration=None):
+    global audio_process
+    with audio_lock:
+        if audio_process:
+            audio_process.terminate()
+            audio_process.wait()
+        if duration:
+            cmd = ["mpg123", "-q", "--skip", str(random.uniform(0, 7)), "--timeout", str(duration), file_path]
+        else:
+            cmd = ["mpg123", "-q", file_path]
+        audio_process = subprocess.Popen(cmd)
 
 def rc_car_control():
     joystick = find_spektrum_device()
@@ -83,6 +99,9 @@ def rc_car_control():
 
         left_speed = max(-1, min(1, left_speed))
         right_speed = max(-1, min(1, right_speed))
+
+        if abs(left_speed) > 0.7 or abs(right_speed) > 0.7:
+            play_audio("sound3.mp3")
 
         if left_speed > 0:
             left_motor.forward(left_speed)
@@ -187,6 +206,11 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
+def play_random_segments():
+    while running:
+        play_audio("sound1.mp3", duration=2)
+        time.sleep(random.uniform(5, 15))
+
 @app.route('/')
 def index():
     return render_template_string('''
@@ -256,8 +280,10 @@ if __name__ == '__main__':
         print("Initializing motors and starting threads")
         rc_car_thread = threading.Thread(target=rc_car_control, daemon=True)
         head_motor_thread = threading.Thread(target=head_motor_control, daemon=True)
+        random_sound_thread = threading.Thread(target=play_random_segments, daemon=True)
         rc_car_thread.start()
         head_motor_thread.start()
+        random_sound_thread.start()
         print("Threads started")
         app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
     except KeyboardInterrupt:
@@ -269,4 +295,7 @@ if __name__ == '__main__':
         right_motor.stop()
         head_motor.stop()
         camera.release()
+        play_audio("sound2.mp3")
+        if audio_process:
+            audio_process.wait()
         print("Cleanup complete")
