@@ -1,48 +1,60 @@
 import subprocess
 import time
-import os
+
+def run_command(command):
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    output, error = process.communicate()
+    if error:
+        print(f"Error: {error.decode('utf-8')}")
+    return output.decode('utf-8')
 
 def setup_bluetooth():
-    # Install necessary packages
-    subprocess.run(["sudo", "apt-get", "update"])
-    subprocess.run(["sudo", "apt-get", "install", "-y", "bluez", "pulseaudio", "pulseaudio-module-bluetooth"])
+    print("Updating package list...")
+    run_command("sudo apt-get update")
+    
+    print("Installing necessary packages...")
+    run_command("sudo apt-get install -y bluez pulseaudio pulseaudio-module-bluetooth")
 
-    # Add user to bluetooth group
-    subprocess.run(["sudo", "usermod", "-a", "-G", "bluetooth", "pi"])
+    print("Setting Bluetooth device name to R2D2...")
+    run_command("sudo hciconfig hci0 name 'R2D2'")
 
-    # Set Bluetooth device name to R2D2
-    subprocess.run(["sudo", "hciconfig", "hci0", "name", "R2D2"])
+    print("Making Pi discoverable...")
+    run_command("sudo hciconfig hci0 piscan")
 
-    # Make Pi discoverable
-    subprocess.run(["sudo", "hciconfig", "hci0", "piscan"])
+    print("Starting PulseAudio...")
+    run_command("pulseaudio --start --exit-idle-time=-1")
 
-    # Start PulseAudio
-    subprocess.Popen(["pulseaudio", "--start"])
+    print("Loading Bluetooth module...")
+    run_command("pactl load-module module-bluetooth-discover")
 
-    # Load Bluetooth module
-    subprocess.run(["pactl", "load-module", "module-bluetooth-discover"])
+    print("Setting persistent Bluetooth name...")
+    with open('/etc/machine-info', 'w') as f:
+        f.write('PRETTY_HOSTNAME=R2D2\n')
+    run_command("sudo service bluetooth restart")
 
 def start_bluetooth_agent():
-    # Start Bluetooth agent
-    subprocess.Popen(["bluetoothctl", "agent", "NoInputNoOutput"])
-    subprocess.Popen(["bluetoothctl", "default-agent"])
+    print("Starting Bluetooth agent...")
+    run_command("bluetoothctl agent on")
+    run_command("bluetoothctl default-agent")
 
 def main():
     print("Setting up Bluetooth...")
     setup_bluetooth()
     
-    print("Starting Bluetooth agent...")
     start_bluetooth_agent()
     
-    print("Raspberry Pi is now discoverable as 'R2D2' Bluetooth speaker.")
+    print("Raspberry Pi should now be discoverable as 'R2D2' Bluetooth speaker.")
     print("You can now pair and connect your device.")
+    
+    print("Checking Bluetooth status:")
+    print(run_command("hciconfig -a"))
     
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("Stopping Bluetooth speaker...")
-        subprocess.run(["pulseaudio", "--kill"])
+        run_command("pulseaudio --kill")
 
 if __name__ == "__main__":
     main()
