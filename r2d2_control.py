@@ -77,10 +77,16 @@ def play_audio(file_path, duration=None):
             audio_process.terminate()
             audio_process.wait()
         if duration:
-            cmd = ["mpg123", "-q", "--skip", str(random.uniform(0, 7)), "--timeout", str(duration), file_path]
+            start = random.uniform(0, max(0, 9 - duration))  # Assuming sound1.mp3 is 9 seconds long
+            cmd = ["mpg123", "-q", "-k", str(int(start)), file_path]
         else:
             cmd = ["mpg123", "-q", file_path]
         audio_process = subprocess.Popen(cmd)
+        if duration:
+            time.sleep(duration)
+            audio_process.terminate()
+            audio_process.wait()
+
 
 def rc_car_control():
     joystick = find_spektrum_device()
