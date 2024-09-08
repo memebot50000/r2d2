@@ -4,16 +4,7 @@ import time
 import random
 import os
 import signal
-import pygame
 from gpiozero import Motor
-
-# Initialize pygame mixer
-pygame.mixer.init()
-
-# Load sound files
-sound1 = pygame.mixer.Sound("sound1.mp3")
-sound2 = pygame.mixer.Sound("sound2.mp3")
-sound3 = pygame.mixer.Sound("sound3.mp3")
 
 # Initialize motors with the correct pin numbers
 left_motor = Motor(forward=27, backward=17, enable=12)
@@ -23,20 +14,30 @@ head_motor_raw = Motor(forward=5, backward=6, enable=26)
 # Flag to control the main loop
 running = True
 
+def play_sound(sound_file):
+    subprocess.run(["mpg123", "-q", sound_file])
+
 def play_random_segment():
+    sound_length = 9  # Length of sound1.mp3 in seconds
+    segment_length = 2  # Length of the segment to play in seconds
+
     while running:
-        if not pygame.mixer.get_busy():
-            start = random.uniform(0, max(0, sound1.get_length() - 2))
-            sound1.play(start=start, maxtime=2000)  # Play for 2 seconds
-        time.sleep(random.uniform(5, 15))  # Wait between 5 to 15 seconds
+        # Calculate the maximum starting point for the segment
+        max_start = sound_length - segment_length
+        start = random.uniform(0, max(max_start, 0))  # Ensure we don't exceed the length
+
+        # Play the segment
+        subprocess.run(["mpg123", "-q", "-k", str(int(start)), "-n", str(int(segment_length)), "sound1.mp3"])
+        
+        # Wait between 5 to 15 seconds before playing the next segment
+        time.sleep(random.uniform(5, 15))
 
 def monitor_motors():
     while running:
         if (abs(left_motor.value) > 0.7 or 
             abs(right_motor.value) > 0.7 or 
             abs(head_motor_raw.value) > 0.7):
-            if not pygame.mixer.get_busy():
-                sound3.play()
+            play_sound("sound3.mp3")
         time.sleep(0.1)  # Check every 0.1 seconds
 
 def run_script(script_name):
@@ -57,9 +58,8 @@ motor_monitor_thread.start()
 def terminate(signum, frame):
     global running
     running = False
-    sound2.play()
-    pygame.time.wait(int(sound2.get_length() * 1000))  # Wait for sound2 to finish playing
-    pygame.mixer.quit()
+    play_sound("sound2.mp3")
+    time.sleep(2)  # Wait for sound2 to finish playing
     os._exit(0)
 
 # Register the termination handler
