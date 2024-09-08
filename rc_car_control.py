@@ -1,80 +1,99 @@
-import subprocess
-import threading
-import time
-import random
-import os
-import signal
 from gpiozero import Motor
+import evdev
+import time
 
-# Initialize motors with the correct pin numbers
-left_motor = Motor(forward=27, backward=17, enable=12)
-right_motor = Motor(forward=22, backward=23, enable=13)
-head_motor_raw = Motor(forward=5, backward=6, enable=26)
+SPEKTRUM_VENDOR_ID = 0x0483
+SPEKTRUM_PRODUCT_ID = 0x572b
+DEAD_ZONE = 0.2  # 20% dead zone
 
-# Flag to control the main loop
-running = True
+def find_spektrum_device():
+    devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+    for device in devices:
+        if device.info.vendor == SPEKTRUM_VENDOR_ID and device.info.product == SPEKTRUM_PRODUCT_ID:
+            return device
+    return None
 
-def play_sound(sound_file):
-    subprocess.run(["mpg123", "-q", sound_file])
+def normalize(value, min_val, max_val):
+    return 2 * (value - min_val) / (max_val - min_val) - 1
 
-def play_random_segment():
-    sound_length = 9  # Length of sound1.mp3 in seconds
-    segment_length = 2  # Length of the segment to play in seconds
+def apply_dead_zone(value, dead_zone):
+    if abs(value) < dead_zone:
+        return 0
+    return (value - dead_zone * (1 if value > 0 else -1)) / (1 - dead_zone)
 
-    while running:
-        # Calculate the maximum starting point for the segment
-        max_start = sound_length - segment_length
-        start = random.uniform(0, max(max_start, 0))  # Ensure we don't exceed the length
+def rc_car_control():
+    right_motor = Motor(forward=27, backward=17, enable=12)
+    left_motor = Motor(forward=22, backward=23, enable=13)
 
-        # Play the segment
-        subprocess.run(["mpg123", "-q", "-k", str(int(start)), "-n", str(int(segment_length)), "sound1.mp3"])
-        
-        # Wait between 5 to 15 seconds before playing the next segment
-        time.sleep(random.uniform(5, 15))
+    joystick = find_spektrum_device()
+    if not joystick:
+        print("Spektrum receiver not found. Please make sure it's connected.")
+        return
 
-def monitor_motors():
-    while running:
-        if (abs(left_motor.value) > 0.7 or 
-            abs(right_motor.value) > 0.7 or 
-            abs(head_motor_raw.value) > 0.7):
-            play_sound("sound3.mp3")
-        time.sleep(0.1)  # Check every 0.1 seconds
+    print(f"Using device: {joystick.name}")
 
-def run_script(script_name):
-    subprocess.run(["python3", script_name])
+    def stop():
+        left_motor.stop()
+        right_motor.stop()
 
-# Start the scripts
-rc_car_thread = threading.Thread(target=run_script, args=("rc_car_control.py",))
-face_thread = threading.Thread(target=run_script, args=("idle_face_optical.py",))
-random_sound_thread = threading.Thread(target=play_random_segment)
-motor_monitor_thread = threading.Thread(target=monitor_motors)
+    def control_motors(throttle, steering):
+        # Apply dead zone
+        throttle = apply_dead_zone(throttle, DEAD_ZONE)
+        steering = apply_dead_zone(steering, DEAD_ZONE)
 
-rc_car_thread.start()
-face_thread.start()
-random_sound_thread.start()
-motor_monitor_thread.start()
+        # Differential drive control
+        left_speed = throttle + steering
+        right_speed = throttle - steering
 
-# Function to handle termination
-def terminate(signum, frame):
-    global running
-    running = False
-    play_sound("sound2.mp3")
-    time.sleep(2)  # Wait for sound2 to finish playing
-    os._exit(0)
+        # Clamp values between -1 and 1
+        left_speed = max(-1, min(1, left_speed))
+        right_speed = max(-1, min(1, right_speed))
 
-# Register the termination handler
-signal.signal(signal.SIGINT, terminate)
-signal.signal(signal.SIGTERM, terminate)
+        # Control left motor
+        if left_speed > 0:
+            left_motor.forward(left_speed)
+        elif left_speed < 0:
+            left_motor.backward(-left_speed)
+        else:
+            left_motor.stop()
 
-# Main loop
-try:
-    while running:
-        time.sleep(1)
-except KeyboardInterrupt:
-    terminate(None, None)
+        # Control right motor
+        if right_speed > 0:
+            right_motor.forward(right_speed)
+        elif right_speed < 0:
+            right_motor.backward(-right_speed)
+        else:
+            right_motor.stop()
 
-# Wait for threads to finish
-rc_car_thread.join()
-face_thread.join()
-random_sound_thread.join()
-motor_monitor_thread.join()
+        print(f"Left: {left_speed:.2f}, Right: {right_speed:.2f}")  # Debug print
+
+    print("RC Car Control Ready. Use the Spektrum controller to control the car. Press Ctrl+C to quit.")
+
+    # Get initial values and capabilities
+    absinfo_y = joystick.absinfo(evdev.ecodes.ABS_Y)
+    absinfo_x = joystick.absinfo(evdev.ecodes.ABS_X)
+
+    # Initialize throttle and steering
+    throttle = 0
+    steering = 0
+
+    try:
+        for event in joystick.read_loop():
+            if event.type == evdev.ecodes.EV_ABS:
+                if event.code == evdev.ecodes.ABS_Y:  # Throttle
+                    throttle = normalize(event.value, absinfo_y.min, absinfo_y.max)
+                elif event.code == evdev.ecodes.ABS_X:  # Steering
+                    steering = normalize(event.value, absinfo_x.min, absinfo_x.max)
+                
+                control_motors(throttle, steering)
+
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user. Exiting...")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        stop()
+        print("RC Car Control stopped.")
+
+if __name__ == "__main__":
+    rc_car_control()
