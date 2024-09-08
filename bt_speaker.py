@@ -1,5 +1,6 @@
 import subprocess
 import time
+import os
 
 def run_command(command):
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
@@ -22,10 +23,12 @@ def setup_bluetooth():
     run_command("sudo hciconfig hci0 piscan")
 
     print("Starting PulseAudio...")
-    run_command("pulseaudio --start --exit-idle-time=-1")
+    # Run PulseAudio as the user 'wvfiv'
+    run_command("su wvfiv -c 'pulseaudio --start --exit-idle-time=-1'")
 
     print("Loading Bluetooth module...")
-    run_command("pactl load-module module-bluetooth-discover")
+    # Run pactl as the user 'wvfiv'
+    run_command("su wvfiv -c 'pactl load-module module-bluetooth-discover'")
 
     print("Setting persistent Bluetooth name...")
     with open('/etc/machine-info', 'w') as f:
@@ -54,7 +57,7 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("Stopping Bluetooth speaker...")
-        run_command("pulseaudio --kill")
+        run_command("su wvfiv -c 'pulseaudio --kill'")
 
 if __name__ == "__main__":
     main()
