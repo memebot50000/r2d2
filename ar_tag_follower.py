@@ -5,8 +5,8 @@ from gpiozero import Motor
 import threading
 
 # Motor setup
-right_motor = Motor(forward=27, backward=17, enable=12)
-left_motor = Motor(forward=22, backward=23, enable=13)
+left_motor = Motor(forward=27, backward=17, enable=12)
+right_motor = Motor(forward=22, backward=23, enable=13)
 
 # Constants
 DEAD_ZONE = 0.2
