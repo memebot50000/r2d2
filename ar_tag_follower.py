@@ -87,6 +87,9 @@ def generate_frames():
         if not success:
             break
 
+        # Rotate the frame by 180 degrees
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+
         with lock:
             frame = process_frame(frame)
 
