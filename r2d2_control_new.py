@@ -268,8 +268,8 @@ if __name__ == '__main__':
         
         print("Threads started")
         
-        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
-        
+        app.run(host='0.0.0.0', port=5000, debug=False)
+
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
     
