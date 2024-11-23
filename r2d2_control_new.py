@@ -1,10 +1,13 @@
+import os
 import time
 import cv2
-import os
 import threading
 from flask import Flask, Response, render_template_string, request
 import pygame
 from gpiozero import Motor
+
+# Set up environment for Pygame to use ALSA or PulseAudio
+os.environ['SDL_AUDIODRIVER'] = 'alsa'  # Change to 'pulse' if needed
 
 app = Flask(__name__)
 
@@ -30,12 +33,6 @@ right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
 head_motor = Motor(forward=6, backward=5, enable=26)
 
-# Head Movement Parameters
-TURN_SPEED = 0.1
-current_angle = 0
-movement_command = None
-movement_start_time = 0
-
 # Global variables
 running = True
 armed = False
@@ -59,7 +56,7 @@ def play_sound(sound_name):
     if current_sound:
         current_sound.stop()
     current_sound = sounds[sound_name]
-    current_sound.play(-1)  # -1 means loop indefinitely
+    current_sound.play(-1)  # Loop indefinitely
 
 def control_motors(throttle, steering):
     if not armed:
@@ -71,6 +68,7 @@ def control_motors(throttle, steering):
     steering = apply_dead_zone(steering, DEAD_ZONE)
     left_speed = throttle + steering
     right_speed = throttle - steering
+    
     left_speed = max(-1, min(1, left_speed))
     right_speed = max(-1, min(1, right_speed))
 
@@ -88,20 +86,6 @@ def control_motors(throttle, steering):
     else:
         right_motor.stop()
 
-def head_motor_control():
-    global current_angle, movement_command, movement_start_time
-    while running:
-        current_time = time.time()
-        if movement_command and current_time - movement_start_time < 1:
-            if movement_command == 'left':
-                head_motor.value = -TURN_SPEED
-            elif movement_command == 'right':
-                head_motor.value = TURN_SPEED
-        else:
-            head_motor.stop()
-            movement_command = None
-        time.sleep(0.01)
-
 def generate_frames():
     while running:
         ret, frame = camera.read()
@@ -113,12 +97,9 @@ def generate_frames():
 
         for (x, y, w, h) in faces:
             cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-            cv2.drawMarker(frame, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-            cv2.drawMarker(frame, (x+w, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-            cv2.drawMarker(frame, (x, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-            cv2.drawMarker(frame, (x+w, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
 
         cv2.putText(frame, f"Armed: {'Yes' if armed else 'No'}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -152,11 +133,6 @@ def index():
                 margin-top: 20px;
                 text-align: center;
             }
-            .arrow {
-                font-size: 24px;
-                margin: 0 10px;
-                cursor: pointer;
-            }
             #armed-checkbox {
                 margin-top: 20px;
                 text-align: center;
@@ -164,6 +140,11 @@ def index():
             #sound-controls {
                 margin-top: 20px;
                 text-align: center;
+            }
+            .arrow {
+                font-size: 24px;
+                margin: 0 10px;
+                cursor: pointer;
             }
         </style>
     </head>
@@ -198,20 +179,13 @@ def index():
 
             joystick.on('move', function(evt, data) {
                 var x = data.vector.x;
-                var y = -data.vector.y;
+                var y = -data.vector.y; // Invert Y-axis
                 $.post('/control', {throttle: y, steering: x});
             });
 
             joystick.on('end', function() {
                 $.post('/control', {throttle: 0, steering: 0});
             });
-
-            function sendCommand(cmd) {
-                $.post('/control', {command: cmd});
-            }
-
-            $('#left').click(function() { sendCommand('left'); });
-            $('#right').click(function() { sendCommand('right'); });
 
             $('#armed').change(function() {
                 $.post('/arm', {armed: this.checked});
@@ -248,15 +222,14 @@ def video_feed():
 
 @app.route('/control', methods=['POST'])
 def control():
-    global movement_command, movement_start_time
+    global movement_command
     command = request.form.get('command')
-    throttle = float(request.form.get('throttle', 0))
-    steering = float(request.form.get('steering', 0))
-
+    
     if command in ['left', 'right']:
         movement_command = command
-        movement_start_time = time.time()
     else:
+        throttle = float(request.form.get('throttle', 0))
+        steering = float(request.form.get('steering', 0))
         control_motors(throttle, steering)
 
     return 'OK'
@@ -269,36 +242,43 @@ def arm():
 
 @app.route('/play_sound', methods=['POST'])
 def play_sound_route():
-    sound = request.form.get('sound')
-    if sound in sounds:
-        play_sound(sound)
+    sound_name = request.form.get('sound')
+    
+    if sound_name in sounds:
+        play_sound(sound_name)
+    
     return 'OK'
 
 @app.route('/stop_sound', methods=['POST'])
 def stop_sound():
     global current_sound
+    
     if current_sound:
         current_sound.stop()
-        current_sound = None
+    
     return 'OK'
 
 if __name__ == '__main__':
     try:
         print("Initializing motors and starting threads")
-        head_motor_thread = threading.Thread(target=head_motor_control, daemon=True)
+        
+        head_motor_thread = threading.Thread(target=lambda : None) # Placeholder for head motor control thread if needed.
+        
         head_motor_thread.start()
+        
         print("Threads started")
-        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+        
+        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+        
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
-    finally:
-        running = False
-        print("Stopping motors and releasing camera")
-        left_motor.stop()
-        right_motor.stop()
-        head_motor.stop()
-        camera.release()
-        if current_sound:
-            current_sound.stop()
-        pygame.mixer.quit()
-        print("Cleanup complete")
+    
+finally:
+   running = False 
+   print("Stopping motors and releasing camera")
+   left_motor.stop()
+   right_motor.stop()
+   head_motor.stop()
+   camera.release()
+   pygame.mixer.quit() 
+   print("Cleanup complete")
