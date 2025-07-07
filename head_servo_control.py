@@ -282,49 +282,25 @@ def index():
                 color: #fff;
                 box-shadow: 0 4px 16px 0 #4e8cff44;
             }
-            #dial-container {
+            #shutdown-btn {
                 position: absolute;
-                top: 50%;
+                bottom: 40px;
                 right: 40px;
-                transform: translateY(-50%);
-                z-index: 2;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                background: rgba(24,26,32,0.85);
-                border-radius: 50%;
-                box-shadow: 0 4px 32px 0 #000a;
-                padding: 0;
-                width: 120px;
-                height: 120px;
+                z-index: 3;
+                background: linear-gradient(90deg, #ff3b3b 0%, #a80000 100%);
+                color: #fff;
+                font-size: 1.1rem;
+                font-weight: 600;
+                border: none;
+                border-radius: 8px;
+                padding: 16px 32px;
+                cursor: pointer;
+                box-shadow: 0 2px 12px 0 #a8000055;
+                transition: background 0.2s, box-shadow 0.2s;
             }
-            #dial {
-                width: 120px;
-                height: 120px;
-                position: relative;
-                margin: 0;
-            }
-            #dial-bg {
-                width: 100%;
-                height: 100%;
-                border-radius: 50%;
-                background: linear-gradient(135deg, #23242a 0%, #232a3a 100%);
-                border: 4px solid #4e8cff;
-                position: absolute;
-                left: 0; top: 0;
-            }
-            #dial-needle {
-                width: 4px;
-                height: 54px;
-                background: #4e8cff;
-                position: absolute;
-                left: 50%;
-                top: 50%;
-                transform: translate(-50%, 0) rotate(-90deg);
-                transform-origin: bottom center;
-                border-radius: 2px;
-                box-shadow: 0 0 8px #4e8cff88;
-                transition: transform 0.4s cubic-bezier(.4,2,.3,1);
+            #shutdown-btn:hover {
+                background: linear-gradient(90deg, #a80000 0%, #ff3b3b 100%);
+                box-shadow: 0 4px 24px 0 #ff3b3b55;
             }
             @media (max-width: 900px) {
                 #servo-controls {
@@ -337,17 +313,11 @@ def index():
                     font-size: 1rem;
                     padding: 10px 12px;
                 }
-                #dial-container {
+                #shutdown-btn {
+                    bottom: 10px;
                     right: 10px;
-                    width: 70px;
-                    height: 70px;
-                }
-                #dial {
-                    width: 70px;
-                    height: 70px;
-                }
-                #dial-needle {
-                    height: 32px;
+                    padding: 10px 18px;
+                    font-size: 1rem;
                 }
             }
         </style>
@@ -357,12 +327,6 @@ def index():
             <div id="camera-container">
                 <img id="camera-feed" src="{{ url_for('video_feed') }}" alt="Camera Feed" />
             </div>
-            <div id="dial-container">
-                <div id="dial">
-                    <div id="dial-bg"></div>
-                    <div id="dial-needle"></div>
-                </div>
-            </div>
             <div id="servo-controls">
                 <button class="servo-btn" data-pos="left">Left</button>
                 <button class="servo-btn" data-pos="left-center">Left-Center</button>
@@ -370,31 +334,14 @@ def index():
                 <button class="servo-btn" data-pos="right-center">Right-Center</button>
                 <button class="servo-btn" data-pos="right">Right</button>
             </div>
+            <button id="shutdown-btn">Shutdown</button>
         </div>
         <script>
-            // Dial logic
-            const SERVO_POSITIONS = {
-                'left': 20,
-                'left-center': 50,
-                'center': 80,
-                'right-center': 110,
-                'right': 140
-            };
-            const DIAL_MIN = 20;
-            const DIAL_MAX = 140;
-            function updateDial(posName) {
-                const angle = SERVO_POSITIONS[posName] || 80;
-                // Map angle (20-140) to dial (0-360deg, but needle points up at center)
-                const rel = (angle - DIAL_MIN) / (DIAL_MAX - DIAL_MIN);
-                const deg = -90 + rel * 270; // -90deg (up) to +180deg (left to right, 270deg sweep)
-                $("#dial-needle").css('transform', `translate(-50%, 0) rotate(${deg}deg)`);
-                $(".servo-btn").removeClass('selected');
-                $(`.servo-btn[data-pos='${posName}']`).addClass('selected');
-            }
             // UI logic
             function setServoPosition(pos) {
                 $.post('/set_servo', {position: pos}, function() {
-                    updateDial(pos);
+                    $(".servo-btn").removeClass('selected');
+                    $(`.servo-btn[data-pos='${pos}']`).addClass('selected');
                 });
             }
             $('.servo-btn').click(function() {
@@ -403,7 +350,15 @@ def index():
             });
             // Highlight the current position on load
             $(function() {
-                updateDial('{{ current_servo_position }}');
+                setServoPosition('{{ current_servo_position }}');
+            });
+            // Shutdown button logic
+            $('#shutdown-btn').click(function() {
+                if (confirm('Are you sure you want to shutdown the server?')) {
+                    $.post('/shutdown', function() {
+                        $('#shutdown-btn').text('Shutting down...').prop('disabled', true);
+                    });
+                }
             });
         </script>
     </body>
@@ -431,6 +386,15 @@ def set_servo():
     if pos in SERVO_POSITIONS:
         current_servo_position = pos
     return 'OK'
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    global running
+    running = False
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func:
+        func()
+    return 'Server shutting down...'
 
 if __name__ == '__main__':
     try:
