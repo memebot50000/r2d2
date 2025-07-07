@@ -44,9 +44,30 @@ GPIO.setup(SERVO_PIN, GPIO.OUT)
 pwm = GPIO.PWM(SERVO_PIN, 50)
 pwm.start(0)
 
+# Head servo positions (5 evenly spaced positions from 20 to 140 degrees)
+SERVO_POSITIONS = {
+    'left': 20,
+    'left-center': 50,
+    'center': 80,
+    'right-center': 110,
+    'right': 140
+}
+current_servo_position = 'center'
+servo_lock = threading.Lock()
+
 def angle_to_duty(angle):
     # Map 0-180 degrees to 2.5-12.5% duty cycle
     return 2.5 + (angle / 180.0) * 10.0
+
+def set_servo_position(position_name):
+    global current_servo_position
+    angle = SERVO_POSITIONS.get(position_name, 80)  # Default to center if invalid
+    duty = angle_to_duty(angle)
+    with servo_lock:
+        pwm.ChangeDutyCycle(duty)
+        time.sleep(0.3)  # Allow servo to reach position
+        pwm.ChangeDutyCycle(0)
+    current_servo_position = position_name
 
 # Head Movement Parameters
 current_angle = 0
@@ -157,31 +178,14 @@ def rc_car_control():
         left_motor.stop()
         right_motor.stop()
 
-def head_servo_sweep():
-    try:
-        print("Sweeping head servo from 20 to 140 and back in 3 degree steps. Press Ctrl+C to exit.")
-        while running:
-            # Sweep up
-            for angle in range(20, 141, 3):
-                if not running:
-                    break
-                duty = angle_to_duty(angle)
-                pwm.ChangeDutyCycle(duty)
-                time.sleep(0.04)
-                pwm.ChangeDutyCycle(0)
-            # Sweep down
-            for angle in range(140, 19, -3):
-                if not running:
-                    break
-                duty = angle_to_duty(angle)
-                pwm.ChangeDutyCycle(duty)
-                time.sleep(0.04)
-                pwm.ChangeDutyCycle(0)
-    except KeyboardInterrupt:
-        print("\nExiting and cleaning up GPIO.")
-    finally:
-        pwm.stop()
-        GPIO.cleanup()
+def head_servo_control():
+    # This thread just keeps the servo at the requested position
+    last_position = None
+    while running:
+        if current_servo_position != last_position:
+            set_servo_position(current_servo_position)
+            last_position = current_servo_position
+        time.sleep(0.05)
 
 def generate_frames():
     global prev_frame, prev_points
@@ -250,10 +254,18 @@ def index():
             #controls {
                 margin-top: 20px;
             }
-            .arrow {
+            .arrow, .servo-btn {
                 font-size: 24px;
                 margin: 0 10px;
                 cursor: pointer;
+                padding: 5px 10px;
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                background: #f0f0f0;
+            }
+            .servo-btn.selected {
+                background: #aeeaae;
+                border-color: #4caf50;
             }
         </style>
     </head>
@@ -264,13 +276,19 @@ def index():
             <span class="arrow" id="left">&#8592;</span>
             <span class="arrow" id="right">&#8594;</span>
         </div>
+        <div id="servo-controls" style="margin-top:20px;">
+            <span class="servo-btn" data-pos="left">Left</span>
+            <span class="servo-btn" data-pos="left-center">Left-Center</span>
+            <span class="servo-btn" data-pos="center">Center</span>
+            <span class="servo-btn" data-pos="right-center">Right-Center</span>
+            <span class="servo-btn" data-pos="right">Right</span>
+        </div>
         <script>
             function sendCommand(cmd) {
                 $.post('/control', {command: cmd});
             }
             $('#left').click(function() { sendCommand('left'); });
             $('#right').click(function() { sendCommand('right'); });
-            
             $(document).keydown(function(e) {
                 switch(e.which) {
                     case 37: // left arrow
@@ -283,10 +301,24 @@ def index():
                 }
                 e.preventDefault();
             });
+            function setServoPosition(pos) {
+                $.post('/set_servo', {position: pos}, function() {
+                    $('.servo-btn').removeClass('selected');
+                    $('.servo-btn[data-pos="'+pos+'"]').addClass('selected');
+                });
+            }
+            $('.servo-btn').click(function() {
+                var pos = $(this).data('pos');
+                setServoPosition(pos);
+            });
+            // Highlight the current position on load
+            $(function() {
+                setServoPosition('{{ current_servo_position }}');
+            });
         </script>
     </body>
     </html>
-    ''')
+    ''', current_servo_position=current_servo_position)
 
 @app.route('/video_feed')
 def video_feed():
@@ -302,11 +334,19 @@ def control():
         movement_start_time = time.time()
     return 'OK'
 
+@app.route('/set_servo', methods=['POST'])
+def set_servo():
+    global current_servo_position
+    pos = request.form.get('position')
+    if pos in SERVO_POSITIONS:
+        current_servo_position = pos
+    return 'OK'
+
 if __name__ == '__main__':
     try:
         print("Initializing motors and starting threads")
         rc_car_thread = threading.Thread(target=rc_car_control, daemon=True)
-        head_servo_thread = threading.Thread(target=head_servo_sweep, daemon=True)
+        head_servo_thread = threading.Thread(target=head_servo_control, daemon=True)
         random_sound_thread = threading.Thread(target=play_random_segments, daemon=True)
         rc_car_thread.start()
         head_servo_thread.start()
