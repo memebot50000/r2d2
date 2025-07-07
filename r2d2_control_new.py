@@ -28,20 +28,25 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
 
-# Servo setup (RPi.GPIO)
+# Servo setup (RPi.GPIO) - PWM object created ONCE
 SERVO_PIN = 12  # BOARD numbering (physical pin 12, GPIO 18)
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(SERVO_PIN, GPIO.OUT)
+servo_pwm = GPIO.PWM(SERVO_PIN, 50)  # 50Hz for servo
+servo_pwm.start(7.5)  # Neutral position
+
+servo_lock = threading.Lock()
 
 def angle_to_duty(angle):
     # Map 0-180 degrees to 5-25% duty cycle (typical for hobby servos)
     return float(angle) / 10.0 + 5.0
 
 def move_servo(angle):
-    pwm = GPIO.PWM(SERVO_PIN, 50)
-    pwm.start(angle_to_duty(angle))
-    time.sleep(0.4)  # Allow servo to reach position
-    pwm.stop()
+    with servo_lock:
+        duty = angle_to_duty(angle)
+        servo_pwm.ChangeDutyCycle(duty)
+        time.sleep(0.4)  # Allow servo to reach position
+        servo_pwm.ChangeDutyCycle(0)  # Stop sending pulses (servo holds position)
 
 # Motor and control state
 throttle = 0
@@ -76,7 +81,7 @@ def generate_frames():
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
         for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 200, 255), 2)
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -117,24 +122,113 @@ def index():
     <head>
         <title>R2D2 Control Panel</title>
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <link href="https://fonts.googleapis.com/css?family=Orbitron:700&display=swap" rel="stylesheet">
         <style>
-            #controls { margin-top: 20px; }
-            #joystick { width: 200px; height: 200px; background: #eee; border-radius: 50%; position: relative; margin-bottom: 20px; touch-action: none; user-select: none; }
-            #stick { width: 60px; height: 60px; background: #888; border-radius: 50%; position: absolute; left: 70px; top: 70px; cursor: pointer; touch-action: none; }
-            .slider-label { display: block; margin-top: 10px; }
-            .slider { width: 300px; }
+            body {
+                background: #181c25;
+                color: #f0f0f0;
+                font-family: 'Orbitron', Arial, sans-serif;
+                margin: 0;
+                padding: 0;
+            }
+            h1 {
+                color: #00eaff;
+                text-shadow: 0 0 10px #00eaff88, 0 0 30px #00eaff44;
+                text-align: center;
+                margin-top: 30px;
+                font-size: 2.2em;
+                letter-spacing: 3px;
+            }
+            #controls {
+                margin: 30px auto 0 auto;
+                background: #23283a;
+                border-radius: 20px;
+                padding: 30px 40px 40px 40px;
+                box-shadow: 0 0 30px #00eaff22;
+                max-width: 500px;
+            }
+            #joystick {
+                width: 200px;
+                height: 200px;
+                background: linear-gradient(135deg, #23283a 60%, #00eaff22 100%);
+                border-radius: 50%;
+                position: relative;
+                margin: 30px auto 15px auto;
+                box-shadow: 0 0 20px #00eaff33;
+                border: 2px solid #00eaff44;
+                user-select: none;
+                touch-action: none;
+            }
+            #stick {
+                width: 60px;
+                height: 60px;
+                background: radial-gradient(circle, #00eaff 60%, #181c25 100%);
+                border-radius: 50%;
+                position: absolute;
+                left: 70px;
+                top: 70px;
+                cursor: pointer;
+                box-shadow: 0 0 20px #00eaff88;
+                border: 2px solid #00eaff;
+                touch-action: none;
+                transition: box-shadow 0.2s;
+            }
+            #stick:active {
+                box-shadow: 0 0 30px #00eaffcc;
+            }
+            .slider-label {
+                display: block;
+                margin: 30px 0 10px 0;
+                font-size: 1.1em;
+                color: #00eaff;
+                letter-spacing: 2px;
+            }
+            .slider {
+                width: 100%;
+                max-width: 350px;
+                margin: 0 auto;
+                display: block;
+                accent-color: #00eaff;
+                background: #23283a;
+                border-radius: 10px;
+                height: 8px;
+                box-shadow: 0 0 10px #00eaff44;
+            }
+            #servo_angle_val {
+                margin-left: 12px;
+                color: #00eaff;
+                font-weight: bold;
+                font-size: 1.1em;
+            }
+            .readout {
+                display: inline-block;
+                margin: 0 20px 0 0;
+                font-size: 1.1em;
+                color: #00eaff;
+                font-weight: bold;
+            }
+            #video {
+                display: block;
+                margin: 30px auto 0 auto;
+                border-radius: 20px;
+                box-shadow: 0 0 30px #00eaff22;
+                border: 3px solid #00eaff22;
+            }
+            @media (max-width: 700px) {
+                #controls { padding: 15px 5vw; }
+                #joystick { width: 140px; height: 140px; }
+                #stick { width: 40px; height: 40px; left: 50px; top: 50px; }
+            }
         </style>
     </head>
     <body>
         <h1>R2D2 Control Panel</h1>
-        <img src="{{ url_for('video_feed') }}" width="640" height="480" />
+        <img id="video" src="{{ url_for('video_feed') }}" width="640" height="480" />
         <div id="controls">
-            <div>
-                <label>Drive Joystick</label>
-                <div id="joystick"><div id="stick"></div></div>
-                <span>Throttle: <span id="throttle_val">0</span></span>
-                <span>Steering: <span id="steering_val">0</span></span>
-            </div>
+            <label>Drive Joystick</label>
+            <div id="joystick"><div id="stick"></div></div>
+            <span class="readout">Throttle: <span id="throttle_val">0</span></span>
+            <span class="readout">Steering: <span id="steering_val">0</span></span>
             <label class="slider-label">Head Servo Angle</label>
             <input type="range" min="0" max="180" step="1" value="90" id="servo_angle" class="slider">
             <span id="servo_angle_val">90</span>
@@ -276,6 +370,7 @@ if __name__ == '__main__':
         running = False
         left_motor.stop()
         right_motor.stop()
+        servo_pwm.stop()
         GPIO.cleanup()
         camera.release()
         play_audio("sound2.mp3")
