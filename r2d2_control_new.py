@@ -5,12 +5,13 @@ import threading
 import cv2
 import numpy as np
 import os
+from gpiozero import Motor
 import subprocess
 import random
 
 app = Flask(__name__)
 
-# Camera and face detection setup (unchanged)
+# Camera and face detection setup
 cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
 if not os.path.isfile(cascade_path):
     print(f"Error: Cascade file not found at {cascade_path}")
@@ -23,31 +24,24 @@ if not camera.isOpened():
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# Motor setup (unchanged)
-from gpiozero import Motor
+# Motor setup (gpiozero)
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
 
-# Servo setup using RPi.GPIO
-SERVO_PIN = 12  # BOARD numbering (physical pin 12)
+# Servo setup (RPi.GPIO)
+SERVO_PIN = 12  # BOARD numbering (physical pin 12, GPIO 18)
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(SERVO_PIN, GPIO.OUT)
-servo_pwm = GPIO.PWM(SERVO_PIN, 50)  # 50Hz for servo
-servo_pwm.start(7.5)  # Neutral position
 
 def angle_to_duty(angle):
     # Map 0-180 degrees to 5-25% duty cycle (typical for hobby servos)
     return float(angle) / 10.0 + 5.0
 
-servo_angle = 90
-last_servo_angle = 90
-
-def set_servo(angle):
-    global last_servo_angle
-    if angle != last_servo_angle:
-        duty = angle_to_duty(angle)
-        servo_pwm.ChangeDutyCycle(duty)
-        last_servo_angle = angle
+def move_servo(angle):
+    pwm = GPIO.PWM(SERVO_PIN, 50)
+    pwm.start(angle_to_duty(angle))
+    time.sleep(0.4)  # Allow servo to reach position
+    pwm.stop()
 
 # Motor and control state
 throttle = 0
@@ -87,6 +81,33 @@ def generate_frames():
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+# --- MP3 Sound Stuff ---
+audio_lock = threading.Lock()
+audio_process = None
+running = True
+
+def play_audio(file_path, duration=None):
+    global audio_process
+    with audio_lock:
+        if audio_process:
+            audio_process.terminate()
+            audio_process.wait()
+        if duration:
+            start = random.uniform(0, max(0, 9 - duration))
+            cmd = ["mpg123", "-a", "hw:1,0", "-q", "-k", str(int(start)), file_path]
+        else:
+            cmd = ["mpg123", "-a", "hw:1,0", "-q", file_path]
+        audio_process = subprocess.Popen(cmd)
+        if duration:
+            time.sleep(duration)
+            audio_process.terminate()
+            audio_process.wait()
+
+def play_random_segments():
+    while running:
+        play_audio("sound1.mp3", duration=2)
+        time.sleep(random.uniform(5, 15))
 
 @app.route('/')
 def index():
@@ -131,8 +152,7 @@ def index():
             function sendControls() {
                 $.post('/set_controls', {
                     throttle: throttle,
-                    steering: steering,
-                    servo_angle: $('#servo_angle').val()
+                    steering: steering
                 });
             }
 
@@ -207,12 +227,12 @@ def index():
             // Initialize stick
             resetStick();
 
-            // Servo slider
+            // Servo slider (only sends when changed)
             let last_servo_val = $('#servo_angle').val();
             $('#servo_angle').on('input change', function() {
                 $('#servo_angle_val').text($('#servo_angle').val());
                 if ($('#servo_angle').val() != last_servo_val) {
-                    sendControls();
+                    $.post('/set_servo', {servo_angle: $('#servo_angle').val()});
                     last_servo_val = $('#servo_angle').val();
                 }
             });
@@ -232,21 +252,33 @@ def set_controls():
     try:
         throttle = float(request.form.get('throttle', 0))
         steering = float(request.form.get('steering', 0))
-        new_servo_angle = int(request.form.get('servo_angle', 90))
         update_motors()
-        set_servo(new_servo_angle)
+        return 'OK'
+    except Exception as e:
+        return f'Error: {e}', 400
+
+@app.route('/set_servo', methods=['POST'])
+def set_servo():
+    try:
+        angle = int(request.form.get('servo_angle', 90))
+        threading.Thread(target=move_servo, args=(angle,), daemon=True).start()
         return 'OK'
     except Exception as e:
         return f'Error: {e}', 400
 
 if __name__ == '__main__':
     try:
+        # Start random sound thread
+        random_sound_thread = threading.Thread(target=play_random_segments, daemon=True)
+        random_sound_thread.start()
         app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
-    except KeyboardInterrupt:
-        print("\nProgram interrupted by user. Exiting...")
     finally:
+        global running
+        running = False
         left_motor.stop()
         right_motor.stop()
-        servo_pwm.stop()
         GPIO.cleanup()
         camera.release()
+        play_audio("sound2.mp3")
+        if audio_process:
+            audio_process.wait()
