@@ -1,109 +1,149 @@
-import os
+from gpiozero import Motor, Servo
+import evdev
 import time
 import cv2
+import numpy as np
+import os
 import threading
 from flask import Flask, Response, render_template_string, request
-import pygame
-from gpiozero import Motor
-
-# Set up environment for Pygame to use ALSA or PulseAudio
-os.environ['SDL_AUDIODRIVER'] = 'alsa'  # Change to 'pulse' if needed
+import subprocess
+import random
 
 app = Flask(__name__)
 
-# Constants
+# RC Car Control Constants
+SPEKTRUM_VENDOR_ID = 0x0483
+SPEKTRUM_PRODUCT_ID = 0x572b
 DEAD_ZONE = 0.2  # 20% dead zone
 
-# Face Detection Constants
+# Face Detection and Optical Flow Constants
 cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
 if not os.path.isfile(cascade_path):
     print(f"Error: Cascade file not found at {cascade_path}")
     exit()
 
 face_cascade = cv2.CascadeClassifier(cascade_path)
+
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 if not camera.isOpened():
     print("Error: Could not open camera.")
     exit()
+
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 # Motor Initialization
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
-head_motor = Motor(forward=6, backward=5, enable=26)
+head_servo = Servo(12)  # New: servo on pin 12
+
+# Optical Flow Parameters
+feature_params = dict(maxCorners=100, qualityLevel=0.3, minDistance=7, blockSize=7)
+lk_params = dict(winSize=(15, 15), maxLevel=2, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+color = np.random.randint(0, 255, (100, 3))
 
 # Global variables
+prev_frame = None
+prev_points = None
 running = True
-armed = False
+audio_lock = threading.Lock()
+audio_process = None
 
-# Initialize pygame for audio
-pygame.mixer.init()
-sounds = {
-    'sound1': pygame.mixer.Sound("sound1.mp3"),
-    'sound2': pygame.mixer.Sound("sound2.mp3"),
-    'sound3': pygame.mixer.Sound("sound3.mp3")
-}
-current_sound = None
+# Motor and servo control state
+left_motor_speed = 0
+right_motor_speed = 0
+servo_angle = 90  # degrees, 0-180
+
+def normalize(value, min_val, max_val):
+    return 2 * (value - min_val) / (max_val - min_val) - 1
 
 def apply_dead_zone(value, dead_zone):
     if abs(value) < dead_zone:
         return 0
     return (value - dead_zone * (1 if value > 0 else -1)) / (1 - dead_zone)
 
-def play_sound(sound_name):
-    global current_sound
-    if current_sound:
-        current_sound.stop()
-    current_sound = sounds[sound_name]
-    current_sound.play(-1)  # Loop indefinitely
+def play_audio(file_path, duration=None):
+    global audio_process
+    with audio_lock:
+        if audio_process:
+            audio_process.terminate()
+            audio_process.wait()
+        if duration:
+            start = random.uniform(0, max(0, 9 - duration))
+            cmd = ["mpg123", "-a", "hw:1,0", "-q", "-k", str(int(start)), file_path]
+        else:
+            cmd = ["mpg123", "-a", "hw:1,0", "-q", file_path]
+        audio_process = subprocess.Popen(cmd)
+        if duration:
+            time.sleep(duration)
+            audio_process.terminate()
+            audio_process.wait()
 
-def control_motors(throttle, steering):
-    if not armed:
-        left_motor.stop()
-        right_motor.stop()
-        return
-
-    throttle = apply_dead_zone(throttle, DEAD_ZONE)
-    steering = apply_dead_zone(steering, DEAD_ZONE)
-    left_speed = throttle + steering
-    right_speed = throttle - steering
-    
-    left_speed = max(-1, min(1, left_speed))
-    right_speed = max(-1, min(1, right_speed))
-
-    if left_speed > 0:
-        left_motor.forward(left_speed)
-    elif left_speed < 0:
-        left_motor.backward(-left_speed)
+def update_motors():
+    # Called after every slider update
+    global left_motor_speed, right_motor_speed
+    # Left motor
+    if left_motor_speed > 0:
+        left_motor.forward(left_motor_speed)
+    elif left_motor_speed < 0:
+        left_motor.backward(-left_motor_speed)
     else:
         left_motor.stop()
-
-    if right_speed > 0:
-        right_motor.forward(right_speed)
-    elif right_speed < 0:
-        right_motor.backward(-right_speed)
+    # Right motor
+    if right_motor_speed > 0:
+        right_motor.forward(right_motor_speed)
+    elif right_motor_speed < 0:
+        right_motor.backward(-right_motor_speed)
     else:
         right_motor.stop()
+
+def set_servo(angle):
+    # Map 0-180 degrees to -1 to 1 for gpiozero Servo
+    value = (angle / 90.0) - 1
+    head_servo.value = max(-1, min(1, value))
 
 def generate_frames():
+    global prev_frame, prev_points
     while running:
         ret, frame = camera.read()
         if not ret:
             break
-        frame = cv2.flip(frame, -1)  # Flip for upside-down camera
+        frame = cv2.flip(frame, -1)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-
-        for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-
-        cv2.putText(frame, f"Armed: {'Yes' if armed else 'No'}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
+        if len(faces) > 0:
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                cv2.drawMarker(frame, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
+                cv2.drawMarker(frame, (x+w, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
+                cv2.drawMarker(frame, (x, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
+                cv2.drawMarker(frame, (x+w, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
+            prev_points = None
+        else:
+            if prev_frame is not None:
+                if prev_points is None:
+                    prev_points = cv2.goodFeaturesToTrack(prev_frame, mask=None, **feature_params)
+                if prev_points is not None:
+                    next_points, status, _ = cv2.calcOpticalFlowPyrLK(prev_frame, gray, prev_points, None, **lk_params)
+                    if next_points is not None:
+                        good_new = next_points[status == 1]
+                        good_old = prev_points[status == 1]
+                        for i, (new, old) in enumerate(zip(good_new, good_old)):
+                            a, b = new.ravel()
+                            c, d = old.ravel()
+                            frame = cv2.line(frame, (int(a), int(b)), (int(c), int(d)), color[i].tolist(), 2)
+                            frame = cv2.circle(frame, (int(a), int(b)), 5, color[i].tolist(), -1)
+                        prev_points = good_new.reshape(-1, 1, 2)
+        prev_frame = gray
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+def play_random_segments():
+    while running:
+        play_audio("sound1.mp3", duration=2)
+        time.sleep(random.uniform(5, 15))
 
 @app.route('/')
 def index():
@@ -113,103 +153,48 @@ def index():
     <head>
         <title>R2D2 Control Panel</title>
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
         <style>
-            #joystick-container {
-                width: 200px;
-                height: 200px;
-                margin: 20px auto;
-                position: relative;
-            }
-            #joystick {
-                width: 100%;
-                height: 100%;
-                border: 1px solid blue;
-                position: absolute;
-                top: 0;
-                left: 0;
-            }
             #controls {
                 margin-top: 20px;
-                text-align: center;
             }
-            #armed-checkbox {
-                margin-top: 20px;
-                text-align: center;
+            .slider-label {
+                display: block;
+                margin-top: 10px;
             }
-            #sound-controls {
-                margin-top: 20px;
-                text-align: center;
-            }
-            .arrow {
-                font-size: 24px;
-                margin: 0 10px;
-                cursor: pointer;
+            .slider {
+                width: 300px;
             }
         </style>
     </head>
     <body>
         <h1>R2D2 Control Panel</h1>
         <img src="{{ url_for('video_feed') }}" width="640" height="480" />
-        <div id="joystick-container">
-            <div id="joystick"></div>
-        </div>
         <div id="controls">
-            <span class="arrow" id="left">&#8592;</span>
-            <span class="arrow" id="right">&#8594;</span>
-        </div>
-        <div id="armed-checkbox">
-            <label for="armed">Armed:</label>
-            <input type="checkbox" id="armed" name="armed">
-        </div>
-        <div id="sound-controls">
-            <button onclick="playSound('sound1')">Sound 1</button>
-            <button onclick="playSound('sound2')">Sound 2</button>
-            <button onclick="playSound('sound3')">Sound 3</button>
-            <button onclick="stopSound()">Stop Sound</button>
+            <label class="slider-label">Left Motor Speed</label>
+            <input type="range" min="-1" max="1" step="0.01" value="0" id="left_motor" class="slider">
+            <span id="left_motor_val">0</span>
+            <br>
+            <label class="slider-label">Right Motor Speed</label>
+            <input type="range" min="-1" max="1" step="0.01" value="0" id="right_motor" class="slider">
+            <span id="right_motor_val">0</span>
+            <br>
+            <label class="slider-label">Head Servo Angle</label>
+            <input type="range" min="0" max="180" step="1" value="90" id="servo_angle" class="slider">
+            <span id="servo_angle_val">90</span>
         </div>
         <script>
-            var joystick = nipplejs.create({
-                zone: document.getElementById('joystick'),
-                mode: 'static',
-                position: { left: '50%', top: '50%' },
-                color: 'blue',
-                size: 150
-            });
-
-            joystick.on('move', function(evt, data) {
-                var x = data.vector.x;
-                var y = -data.vector.y; // Invert Y-axis
-                $.post('/control', {throttle: y, steering: x});
-            });
-
-            joystick.on('end', function() {
-                $.post('/control', {throttle: 0, steering: 0});
-            });
-
-            $('#armed').change(function() {
-                $.post('/arm', {armed: this.checked});
-            });
-
-            function playSound(sound) {
-                $.post('/play_sound', {sound: sound});
+            function sendControls() {
+                $.post('/set_controls', {
+                    left_motor: $('#left_motor').val(),
+                    right_motor: $('#right_motor').val(),
+                    servo_angle: $('#servo_angle').val()
+                });
             }
-
-            function stopSound() {
-                $.post('/stop_sound');
-            }
-
-            $(document).keydown(function(e) {
-                switch(e.which) {
-                    case 37: // left arrow
-                        sendCommand('left');
-                        break;
-                    case 39: // right arrow
-                        sendCommand('right');
-                        break;
-                    default: return;
-                }
-                e.preventDefault();
+            $('.slider').on('input change', function() {
+                $('#left_motor_val').text($('#left_motor').val());
+                $('#right_motor_val').text($('#right_motor').val());
+                $('#servo_angle_val').text($('#servo_angle').val());
+                sendControls();
             });
         </script>
     </body>
@@ -218,67 +203,39 @@ def index():
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/control', methods=['POST'])
-def control():
-    global movement_command
-    command = request.form.get('command')
-    
-    if command in ['left', 'right']:
-        movement_command = command
-    else:
-        throttle = float(request.form.get('throttle', 0))
-        steering = float(request.form.get('steering', 0))
-        control_motors(throttle, steering)
-
-    return 'OK'
-
-@app.route('/arm', methods=['POST'])
-def arm():
-    global armed
-    armed = request.form.get('armed') == 'true'
-    return 'OK'
-
-@app.route('/play_sound', methods=['POST'])
-def play_sound_route():
-    sound_name = request.form.get('sound')
-    
-    if sound_name in sounds:
-        play_sound(sound_name)
-    
-    return 'OK'
-
-@app.route('/stop_sound', methods=['POST'])
-def stop_sound():
-    global current_sound
-    
-    if current_sound:
-        current_sound.stop()
-    
-    return 'OK'
+@app.route('/set_controls', methods=['POST'])
+def set_controls():
+    global left_motor_speed, right_motor_speed, servo_angle
+    try:
+        left_motor_speed = float(request.form.get('left_motor', 0))
+        right_motor_speed = float(request.form.get('right_motor', 0))
+        servo_angle = int(request.form.get('servo_angle', 90))
+        update_motors()
+        set_servo(servo_angle)
+        return 'OK'
+    except Exception as e:
+        return f'Error: {e}', 400
 
 if __name__ == '__main__':
     try:
         print("Initializing motors and starting threads")
-        
-        head_motor_thread = threading.Thread(target=lambda : None) # Placeholder for head motor control thread if needed.
-        
-        head_motor_thread.start()
-        
+        random_sound_thread = threading.Thread(target=play_random_segments, daemon=True)
+        random_sound_thread.start()
         print("Threads started")
-        
-        app.run(host='0.0.0.0', port=5000, debug=False)
-
+        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
-    
-finally:
-   running = False 
-   print("Stopping motors and releasing camera")
-   left_motor.stop()
-   right_motor.stop()
-   head_motor.stop()
-   camera.release()
-   pygame.mixer.quit() 
-   print("Cleanup complete")
+    finally:
+        running = False
+        print("Stopping motors and releasing camera")
+        left_motor.stop()
+        right_motor.stop()
+        head_servo.detach()
+        camera.release()
+        play_audio("sound2.mp3")
+        if audio_process:
+            audio_process.wait()
+        print("Cleanup complete")
