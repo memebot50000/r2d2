@@ -273,7 +273,6 @@ if __name__ == '__main__':
         random_sound_thread.start()
         app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
     finally:
-        global running
         running = False
         left_motor.stop()
         right_motor.stop()
