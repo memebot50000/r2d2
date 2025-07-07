@@ -19,20 +19,20 @@ def angle_to_duty(angle):
     return 2.5 + (angle / 180.0) * 10.0
 
 try:
-    print("Sweeping servo from 10 to 170 and back. Press Ctrl+C to exit.")
+    print("Sweeping servo from 20 to 160 and back in 2 degree steps. Press Ctrl+C to exit.")
     while True:
         # Sweep up
-        for angle in range(10, 171, 5):
+        for angle in range(20, 161, 2):
             duty = angle_to_duty(angle)
             pwm.ChangeDutyCycle(duty)
             print(f"Angle: {angle} Duty: {duty:.2f}")
-            time.sleep(0.05)
+            time.sleep(0.03)
         # Sweep down
-        for angle in range(170, 9, -5):
+        for angle in range(160, 19, -2):
             duty = angle_to_duty(angle)
             pwm.ChangeDutyCycle(duty)
             print(f"Angle: {angle} Duty: {duty:.2f}")
-            time.sleep(0.05)
+            time.sleep(0.03)
 except KeyboardInterrupt:
     print("\nExiting and cleaning up GPIO.")
 finally:
