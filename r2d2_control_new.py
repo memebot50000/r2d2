@@ -1,4 +1,4 @@
-from gpiozero import Motor, Servo
+from gpiozero import Motor, AngularServo
 import time
 import cv2
 import numpy as np
@@ -10,7 +10,7 @@ import random
 
 app = Flask(__name__)
 
-# Face Detection and Optical Flow Constants
+# Face Detection Constants
 cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
 if not os.path.isfile(cascade_path):
     print(f"Error: Cascade file not found at {cascade_path}")
@@ -29,16 +29,9 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 # Motor Initialization
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
-head_servo = Servo(18)  # Fixed: servo on GPIO 18 (physical pin #12)
-
-# Optical Flow Parameters
-feature_params = dict(maxCorners=100, qualityLevel=0.3, minDistance=7, blockSize=7)
-lk_params = dict(winSize=(15, 15), maxLevel=2, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
-color = np.random.randint(0, 255, (100, 3))
+head_servo = AngularServo(18, min_angle=0, max_angle=180)  # GPIO 18, 0-180 degrees
 
 # Global variables
-prev_frame = None
-prev_points = None
 running = True
 audio_lock = threading.Lock()
 audio_process = None
@@ -47,6 +40,7 @@ audio_process = None
 throttle = 0   # -1 (full reverse) to 1 (full forward)
 steering = 0   # -1 (full left) to 1 (full right)
 servo_angle = 90  # 0-180 degrees
+last_servo_angle = 90
 
 def play_audio(file_path, duration=None):
     global audio_process
@@ -89,12 +83,12 @@ def update_motors():
         right_motor.stop()
 
 def set_servo(angle):
-    # Map 0-180 degrees to -1 to 1 for gpiozero Servo
-    value = (angle / 90.0) - 1
-    head_servo.value = max(-1, min(1, value))
+    global last_servo_angle
+    if angle != last_servo_angle:
+        head_servo.angle = angle
+        last_servo_angle = angle
 
 def generate_frames():
-    global prev_frame, prev_points
     while running:
         ret, frame = camera.read()
         if not ret:
@@ -102,30 +96,8 @@ def generate_frames():
         frame = cv2.flip(frame, -1)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-        if len(faces) > 0:
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-                cv2.drawMarker(frame, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-                cv2.drawMarker(frame, (x+w, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-                cv2.drawMarker(frame, (x, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-                cv2.drawMarker(frame, (x+w, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-            prev_points = None
-        else:
-            if prev_frame is not None:
-                if prev_points is None:
-                    prev_points = cv2.goodFeaturesToTrack(prev_frame, mask=None, **feature_params)
-                if prev_points is not None:
-                    next_points, status, _ = cv2.calcOpticalFlowPyrLK(prev_frame, gray, prev_points, None, **lk_params)
-                    if next_points is not None:
-                        good_new = next_points[status == 1]
-                        good_old = prev_points[status == 1]
-                        for i, (new, old) in enumerate(zip(good_new, good_old)):
-                            a, b = new.ravel()
-                            c, d = old.ravel()
-                            frame = cv2.line(frame, (int(a), int(b)), (int(c), int(d)), color[i].tolist(), 2)
-                            frame = cv2.circle(frame, (int(a), int(b)), 5, color[i].tolist(), -1)
-                        prev_points = good_new.reshape(-1, 1, 2)
-        prev_frame = gray
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -291,9 +263,13 @@ def index():
             resetStick();
 
             // Servo slider
+            let last_servo_val = $('#servo_angle').val();
             $('#servo_angle').on('input change', function() {
                 $('#servo_angle_val').text($('#servo_angle').val());
-                sendControls();
+                if ($('#servo_angle').val() != last_servo_val) {
+                    sendControls();
+                    last_servo_val = $('#servo_angle').val();
+                }
             });
         </script>
     </body>
@@ -311,9 +287,9 @@ def set_controls():
     try:
         throttle = float(request.form.get('throttle', 0))
         steering = float(request.form.get('steering', 0))
-        servo_angle = int(request.form.get('servo_angle', 90))
+        new_servo_angle = int(request.form.get('servo_angle', 90))
         update_motors()
-        set_servo(servo_angle)
+        set_servo(new_servo_angle)
         return 'OK'
     except Exception as e:
         return f'Error: {e}', 400
