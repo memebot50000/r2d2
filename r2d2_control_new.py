@@ -11,12 +11,7 @@ import random
 
 app = Flask(__name__)
 
-# Camera and face detection setup
-cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
-if not os.path.isfile(cascade_path):
-    print(f"Error: Cascade file not found at {cascade_path}")
-    exit()
-face_cascade = cv2.CascadeClassifier(cascade_path)
+# Camera setup (NO face-following for servo)
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 if not camera.isOpened():
     print("Error: Could not open camera.")
@@ -48,8 +43,6 @@ def move_servo(angle):
 # Motor and control state
 throttle = 0
 steering = 0
-servo_angle = 90
-joystick_active = False
 
 def update_motors():
     left_speed = throttle + steering
@@ -77,10 +70,6 @@ def generate_frames():
         if not ret:
             break
         frame = cv2.flip(frame, -1)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-        for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 200, 255), 2)
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -251,9 +240,6 @@ def index():
             var maxRadius = joystick.offsetWidth / 2 - stick.offsetWidth / 2;
             var throttle = 0, steering = 0;
             var last_servo_angle = 90;
-            var servo_angle = 90;
-            var isJoystickActive = false;
-            var lastSentJoystick = false;
 
             function sendControls() {
                 $.post('/set_controls', {
@@ -283,10 +269,9 @@ def index():
                 if (last_servo_angle !== 90) {
                     sendServo(90);
                 }
-                isJoystickActive = false;
             }
 
-            stick.addEventListener('mousedown', function(e) { dragging = true; isJoystickActive = true; });
+            stick.addEventListener('mousedown', function(e) { dragging = true; });
             document.addEventListener('mouseup', function(e) {
                 if (dragging) { dragging = false; resetStick(); }
             });
@@ -315,11 +300,10 @@ def index():
                     if (servoPos !== last_servo_angle) {
                         sendServo(servoPos);
                     }
-                    isJoystickActive = true;
                 }
             });
             // Touch support
-            stick.addEventListener('touchstart', function(e) { dragging = true; isJoystickActive = true; e.preventDefault(); });
+            stick.addEventListener('touchstart', function(e) { dragging = true; e.preventDefault(); });
             document.addEventListener('touchend', function(e) {
                 if (dragging) { dragging = false; resetStick(); }
             });
@@ -347,7 +331,6 @@ def index():
                     if (servoPos !== last_servo_angle) {
                         sendServo(servoPos);
                     }
-                    isJoystickActive = true;
                 }
             });
 
@@ -400,11 +383,7 @@ if __name__ == '__main__':
         running = False
         left_motor.stop()
         right_motor.stop()
-        try:
-            servo_pwm.stop()
-        except:
-            pass
-        GPIO.cleanup()
+        # Do NOT cleanup GPIO as requested
         camera.release()
         play_audio("sound2.mp3")
         if audio_process:
