@@ -1,5 +1,4 @@
 from gpiozero import Motor, Servo
-import evdev
 import time
 import cv2
 import numpy as np
@@ -10,11 +9,6 @@ import subprocess
 import random
 
 app = Flask(__name__)
-
-# RC Car Control Constants
-SPEKTRUM_VENDOR_ID = 0x0483
-SPEKTRUM_PRODUCT_ID = 0x572b
-DEAD_ZONE = 0.2  # 20% dead zone
 
 # Face Detection and Optical Flow Constants
 cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
@@ -35,7 +29,7 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 # Motor Initialization
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
-head_servo = Servo(12)  # New: servo on pin 12
+head_servo = Servo(18)  # Fixed: servo on GPIO 18 (physical pin #12)
 
 # Optical Flow Parameters
 feature_params = dict(maxCorners=100, qualityLevel=0.3, minDistance=7, blockSize=7)
@@ -50,17 +44,9 @@ audio_lock = threading.Lock()
 audio_process = None
 
 # Motor and servo control state
-left_motor_speed = 0
-right_motor_speed = 0
-servo_angle = 90  # degrees, 0-180
-
-def normalize(value, min_val, max_val):
-    return 2 * (value - min_val) / (max_val - min_val) - 1
-
-def apply_dead_zone(value, dead_zone):
-    if abs(value) < dead_zone:
-        return 0
-    return (value - dead_zone * (1 if value > 0 else -1)) / (1 - dead_zone)
+throttle = 0   # -1 (full reverse) to 1 (full forward)
+steering = 0   # -1 (full left) to 1 (full right)
+servo_angle = 90  # 0-180 degrees
 
 def play_audio(file_path, duration=None):
     global audio_process
@@ -80,20 +66,25 @@ def play_audio(file_path, duration=None):
             audio_process.wait()
 
 def update_motors():
-    # Called after every slider update
-    global left_motor_speed, right_motor_speed
+    # Convert throttle and steering to left/right motor speeds
+    global throttle, steering
+    left_speed = throttle + steering
+    right_speed = throttle - steering
+    # Clamp speeds to [-1, 1]
+    left_speed = max(-1, min(1, left_speed))
+    right_speed = max(-1, min(1, right_speed))
     # Left motor
-    if left_motor_speed > 0:
-        left_motor.forward(left_motor_speed)
-    elif left_motor_speed < 0:
-        left_motor.backward(-left_motor_speed)
+    if left_speed > 0:
+        left_motor.forward(left_speed)
+    elif left_speed < 0:
+        left_motor.backward(-left_speed)
     else:
         left_motor.stop()
     # Right motor
-    if right_motor_speed > 0:
-        right_motor.forward(right_motor_speed)
-    elif right_motor_speed < 0:
-        right_motor.backward(-right_motor_speed)
+    if right_speed > 0:
+        right_motor.forward(right_speed)
+    elif right_speed < 0:
+        right_motor.backward(-right_speed)
     else:
         right_motor.stop()
 
@@ -157,6 +148,27 @@ def index():
             #controls {
                 margin-top: 20px;
             }
+            #joystick {
+                width: 200px;
+                height: 200px;
+                background: #eee;
+                border-radius: 50%;
+                position: relative;
+                margin-bottom: 20px;
+                touch-action: none;
+                user-select: none;
+            }
+            #stick {
+                width: 60px;
+                height: 60px;
+                background: #888;
+                border-radius: 50%;
+                position: absolute;
+                left: 70px;
+                top: 70px;
+                cursor: pointer;
+                touch-action: none;
+            }
             .slider-label {
                 display: block;
                 margin-top: 10px;
@@ -170,29 +182,116 @@ def index():
         <h1>R2D2 Control Panel</h1>
         <img src="{{ url_for('video_feed') }}" width="640" height="480" />
         <div id="controls">
-            <label class="slider-label">Left Motor Speed</label>
-            <input type="range" min="-1" max="1" step="0.01" value="0" id="left_motor" class="slider">
-            <span id="left_motor_val">0</span>
-            <br>
-            <label class="slider-label">Right Motor Speed</label>
-            <input type="range" min="-1" max="1" step="0.01" value="0" id="right_motor" class="slider">
-            <span id="right_motor_val">0</span>
-            <br>
+            <div>
+                <label>Drive Joystick</label>
+                <div id="joystick">
+                    <div id="stick"></div>
+                </div>
+                <span>Throttle: <span id="throttle_val">0</span></span>
+                <span>Steering: <span id="steering_val">0</span></span>
+            </div>
             <label class="slider-label">Head Servo Angle</label>
             <input type="range" min="0" max="180" step="1" value="90" id="servo_angle" class="slider">
             <span id="servo_angle_val">90</span>
         </div>
         <script>
+            // Joystick logic
+            var joystick = document.getElementById('joystick');
+            var stick = document.getElementById('stick');
+            var dragging = false;
+            var centerX = joystick.offsetWidth / 2;
+            var centerY = joystick.offsetHeight / 2;
+            var maxRadius = joystick.offsetWidth / 2 - stick.offsetWidth / 2;
+            var throttle = 0, steering = 0;
+
             function sendControls() {
                 $.post('/set_controls', {
-                    left_motor: $('#left_motor').val(),
-                    right_motor: $('#right_motor').val(),
+                    throttle: throttle,
+                    steering: steering,
                     servo_angle: $('#servo_angle').val()
                 });
             }
-            $('.slider').on('input change', function() {
-                $('#left_motor_val').text($('#left_motor').val());
-                $('#right_motor_val').text($('#right_motor').val());
+
+            function updateStick(x, y) {
+                stick.style.left = (x - stick.offsetWidth / 2) + 'px';
+                stick.style.top = (y - stick.offsetHeight / 2) + 'px';
+            }
+
+            function resetStick() {
+                updateStick(centerX, centerY);
+                throttle = 0;
+                steering = 0;
+                $('#throttle_val').text(throttle);
+                $('#steering_val').text(steering);
+                sendControls();
+            }
+
+            stick.addEventListener('mousedown', function(e) { dragging = true; });
+            document.addEventListener('mouseup', function(e) {
+                if (dragging) {
+                    dragging = false;
+                    resetStick();
+                }
+            });
+            document.addEventListener('mousemove', function(e) {
+                if (dragging) {
+                    var rect = joystick.getBoundingClientRect();
+                    var x = e.clientX - rect.left;
+                    var y = e.clientY - rect.top;
+                    var dx = x - centerX;
+                    var dy = y - centerY;
+                    var dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist > maxRadius) {
+                        dx = dx * maxRadius / dist;
+                        dy = dy * maxRadius / dist;
+                        x = centerX + dx;
+                        y = centerY + dy;
+                    }
+                    updateStick(x, y);
+                    // Map to -1 to 1
+                    steering = +(dx / maxRadius).toFixed(2);
+                    throttle = +(-(dy / maxRadius)).toFixed(2);
+                    $('#throttle_val').text(throttle);
+                    $('#steering_val').text(steering);
+                    sendControls();
+                }
+            });
+            // Touch support
+            stick.addEventListener('touchstart', function(e) { dragging = true; e.preventDefault(); });
+            document.addEventListener('touchend', function(e) {
+                if (dragging) {
+                    dragging = false;
+                    resetStick();
+                }
+            });
+            document.addEventListener('touchmove', function(e) {
+                if (dragging && e.touches.length == 1) {
+                    var rect = joystick.getBoundingClientRect();
+                    var x = e.touches[0].clientX - rect.left;
+                    var y = e.touches[0].clientY - rect.top;
+                    var dx = x - centerX;
+                    var dy = y - centerY;
+                    var dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist > maxRadius) {
+                        dx = dx * maxRadius / dist;
+                        dy = dy * maxRadius / dist;
+                        x = centerX + dx;
+                        y = centerY + dy;
+                    }
+                    updateStick(x, y);
+                    steering = +(dx / maxRadius).toFixed(2);
+                    throttle = +(-(dy / maxRadius)).toFixed(2);
+                    $('#throttle_val').text(throttle);
+                    $('#steering_val').text(steering);
+                    sendControls();
+                }
+            });
+
+            // Initialize stick
+            resetStick();
+
+            // Servo slider
+            $('#servo_angle').on('input change', function() {
                 $('#servo_angle_val').text($('#servo_angle').val());
                 sendControls();
             });
@@ -208,10 +307,10 @@ def video_feed():
 
 @app.route('/set_controls', methods=['POST'])
 def set_controls():
-    global left_motor_speed, right_motor_speed, servo_angle
+    global throttle, steering, servo_angle
     try:
-        left_motor_speed = float(request.form.get('left_motor', 0))
-        right_motor_speed = float(request.form.get('right_motor', 0))
+        throttle = float(request.form.get('throttle', 0))
+        steering = float(request.form.get('steering', 0))
         servo_angle = int(request.form.get('servo_angle', 90))
         update_motors()
         set_servo(servo_angle)
