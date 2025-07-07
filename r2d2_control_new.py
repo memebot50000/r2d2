@@ -1,70 +1,61 @@
-from gpiozero import Motor, AngularServo
+import RPi.GPIO as GPIO
 import time
+from flask import Flask, Response, render_template_string, request
+import threading
 import cv2
 import numpy as np
 import os
-import threading
-from flask import Flask, Response, render_template_string, request
 import subprocess
 import random
 
 app = Flask(__name__)
 
-# Face Detection Constants
+# Camera and face detection setup (unchanged)
 cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
 if not os.path.isfile(cascade_path):
     print(f"Error: Cascade file not found at {cascade_path}")
     exit()
-
 face_cascade = cv2.CascadeClassifier(cascade_path)
-
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 if not camera.isOpened():
     print("Error: Could not open camera.")
     exit()
-
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# Motor Initialization
+# Motor setup (unchanged)
+from gpiozero import Motor
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
-head_servo = AngularServo(18, min_angle=0, max_angle=180)  # GPIO 18, 0-180 degrees
 
-# Global variables
-running = True
-audio_lock = threading.Lock()
-audio_process = None
+# Servo setup using RPi.GPIO
+SERVO_PIN = 12  # BOARD numbering (physical pin 12)
+GPIO.setmode(GPIO.BOARD)
+GPIO.setup(SERVO_PIN, GPIO.OUT)
+servo_pwm = GPIO.PWM(SERVO_PIN, 50)  # 50Hz for servo
+servo_pwm.start(7.5)  # Neutral position
 
-# Motor and servo control state
-throttle = 0   # -1 (full reverse) to 1 (full forward)
-steering = 0   # -1 (full left) to 1 (full right)
-servo_angle = 90  # 0-180 degrees
+def angle_to_duty(angle):
+    # Map 0-180 degrees to 5-25% duty cycle (typical for hobby servos)
+    return float(angle) / 10.0 + 5.0
+
+servo_angle = 90
 last_servo_angle = 90
 
-def play_audio(file_path, duration=None):
-    global audio_process
-    with audio_lock:
-        if audio_process:
-            audio_process.terminate()
-            audio_process.wait()
-        if duration:
-            start = random.uniform(0, max(0, 9 - duration))
-            cmd = ["mpg123", "-a", "hw:1,0", "-q", "-k", str(int(start)), file_path]
-        else:
-            cmd = ["mpg123", "-a", "hw:1,0", "-q", file_path]
-        audio_process = subprocess.Popen(cmd)
-        if duration:
-            time.sleep(duration)
-            audio_process.terminate()
-            audio_process.wait()
+def set_servo(angle):
+    global last_servo_angle
+    if angle != last_servo_angle:
+        duty = angle_to_duty(angle)
+        servo_pwm.ChangeDutyCycle(duty)
+        last_servo_angle = angle
+
+# Motor and control state
+throttle = 0
+steering = 0
 
 def update_motors():
-    # Convert throttle and steering to left/right motor speeds
-    global throttle, steering
     left_speed = throttle + steering
     right_speed = throttle - steering
-    # Clamp speeds to [-1, 1]
     left_speed = max(-1, min(1, left_speed))
     right_speed = max(-1, min(1, right_speed))
     # Left motor
@@ -82,14 +73,8 @@ def update_motors():
     else:
         right_motor.stop()
 
-def set_servo(angle):
-    global last_servo_angle
-    if angle != last_servo_angle:
-        head_servo.angle = angle
-        last_servo_angle = angle
-
 def generate_frames():
-    while running:
+    while True:
         ret, frame = camera.read()
         if not ret:
             break
@@ -103,11 +88,6 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-def play_random_segments():
-    while running:
-        play_audio("sound1.mp3", duration=2)
-        time.sleep(random.uniform(5, 15))
-
 @app.route('/')
 def index():
     return render_template_string('''
@@ -117,37 +97,11 @@ def index():
         <title>R2D2 Control Panel</title>
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
         <style>
-            #controls {
-                margin-top: 20px;
-            }
-            #joystick {
-                width: 200px;
-                height: 200px;
-                background: #eee;
-                border-radius: 50%;
-                position: relative;
-                margin-bottom: 20px;
-                touch-action: none;
-                user-select: none;
-            }
-            #stick {
-                width: 60px;
-                height: 60px;
-                background: #888;
-                border-radius: 50%;
-                position: absolute;
-                left: 70px;
-                top: 70px;
-                cursor: pointer;
-                touch-action: none;
-            }
-            .slider-label {
-                display: block;
-                margin-top: 10px;
-            }
-            .slider {
-                width: 300px;
-            }
+            #controls { margin-top: 20px; }
+            #joystick { width: 200px; height: 200px; background: #eee; border-radius: 50%; position: relative; margin-bottom: 20px; touch-action: none; user-select: none; }
+            #stick { width: 60px; height: 60px; background: #888; border-radius: 50%; position: absolute; left: 70px; top: 70px; cursor: pointer; touch-action: none; }
+            .slider-label { display: block; margin-top: 10px; }
+            .slider { width: 300px; }
         </style>
     </head>
     <body>
@@ -156,9 +110,7 @@ def index():
         <div id="controls">
             <div>
                 <label>Drive Joystick</label>
-                <div id="joystick">
-                    <div id="stick"></div>
-                </div>
+                <div id="joystick"><div id="stick"></div></div>
                 <span>Throttle: <span id="throttle_val">0</span></span>
                 <span>Steering: <span id="steering_val">0</span></span>
             </div>
@@ -200,10 +152,7 @@ def index():
 
             stick.addEventListener('mousedown', function(e) { dragging = true; });
             document.addEventListener('mouseup', function(e) {
-                if (dragging) {
-                    dragging = false;
-                    resetStick();
-                }
+                if (dragging) { dragging = false; resetStick(); }
             });
             document.addEventListener('mousemove', function(e) {
                 if (dragging) {
@@ -220,7 +169,6 @@ def index():
                         y = centerY + dy;
                     }
                     updateStick(x, y);
-                    // Map to -1 to 1
                     steering = +(dx / maxRadius).toFixed(2);
                     throttle = +(-(dy / maxRadius)).toFixed(2);
                     $('#throttle_val').text(throttle);
@@ -231,10 +179,7 @@ def index():
             // Touch support
             stick.addEventListener('touchstart', function(e) { dragging = true; e.preventDefault(); });
             document.addEventListener('touchend', function(e) {
-                if (dragging) {
-                    dragging = false;
-                    resetStick();
-                }
+                if (dragging) { dragging = false; resetStick(); }
             });
             document.addEventListener('touchmove', function(e) {
                 if (dragging && e.touches.length == 1) {
@@ -283,7 +228,7 @@ def video_feed():
 
 @app.route('/set_controls', methods=['POST'])
 def set_controls():
-    global throttle, steering, servo_angle
+    global throttle, steering
     try:
         throttle = float(request.form.get('throttle', 0))
         steering = float(request.form.get('steering', 0))
@@ -296,21 +241,12 @@ def set_controls():
 
 if __name__ == '__main__':
     try:
-        print("Initializing motors and starting threads")
-        random_sound_thread = threading.Thread(target=play_random_segments, daemon=True)
-        random_sound_thread.start()
-        print("Threads started")
         app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
     finally:
-        running = False
-        print("Stopping motors and releasing camera")
         left_motor.stop()
         right_motor.stop()
-        head_servo.detach()
+        servo_pwm.stop()
+        GPIO.cleanup()
         camera.release()
-        play_audio("sound2.mp3")
-        if audio_process:
-            audio_process.wait()
-        print("Cleanup complete")
