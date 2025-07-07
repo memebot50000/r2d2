@@ -1,4 +1,4 @@
-from gpiozero import Motor, AngularServo
+from gpiozero import Motor, Servo
 import time
 import cv2
 import numpy as np
@@ -7,7 +7,6 @@ import threading
 from flask import Flask, Response, render_template_string, request
 import subprocess
 import random
-import RPi.GPIO as GPIO
 
 app = Flask(__name__)
 
@@ -43,13 +42,9 @@ steering = 0   # -1 (full left) to 1 (full right)
 servo_angle = 80  # 20-140 center
 last_servo_angle = 80
 
-# Use RPi.GPIO for servo control
-SERVO_PIN = 18  # BCM numbering
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(SERVO_PIN, GPIO.OUT)
-servo_pwm = GPIO.PWM(SERVO_PIN, 50)  # 50Hz
-servo_pwm.start(0)
-servo_lock = threading.Lock()
+# Use gpiozero.Servo for the head servo
+SERVO_PIN = 18
+servo = Servo(SERVO_PIN, min_pulse_width=0.0006, max_pulse_width=0.0023)
 
 def play_audio(file_path, duration=None):
     global audio_process
@@ -91,20 +86,17 @@ def update_motors():
     else:
         right_motor.stop()
 
-def angle_to_duty(angle):
-    # Clamp angle to safe range
+def angle_to_servo_value(angle):
+    # Clamp angle to [20, 140]
     angle = max(20, min(140, angle))
-    return 2.5 + (angle / 180.0) * 10.0
+    # Map 20-140 to -1 to 1
+    return (angle - 80) / 60.0
 
 def set_servo(angle):
     global last_servo_angle
     angle = max(20, min(140, angle))
-    with servo_lock:
-        duty = angle_to_duty(angle)
-        servo_pwm.ChangeDutyCycle(duty)
-        time.sleep(0.04)
-        servo_pwm.ChangeDutyCycle(0)  # Reduce jitter
-        last_servo_angle = angle
+    servo.value = angle_to_servo_value(angle)
+    last_servo_angle = angle
 
 def generate_frames():
     while running:
@@ -435,9 +427,7 @@ if __name__ == '__main__':
         print("Stopping motors and releasing camera")
         left_motor.stop()
         right_motor.stop()
-        # Remove or comment out: head_servo.detach()
-        servo_pwm.stop()
-        GPIO.cleanup()
+        servo.detach()
         camera.release()
         play_audio("sound2.mp3")
         if audio_process:
