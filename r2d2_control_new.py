@@ -133,56 +133,138 @@ def index():
     <html>
     <head>
         <title>R2D2 Control Panel</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <link href="https://fonts.googleapis.com/css?family=Orbitron:700&display=swap" rel="stylesheet">
         <style>
+            body {
+                background: #181c25;
+                color: #f0f0f0;
+                font-family: 'Orbitron', Arial, sans-serif;
+                margin: 0;
+                padding: 0;
+                overflow: hidden;
+            }
+            #container {
+                display: flex;
+                flex-direction: row;
+                justify-content: center;
+                align-items: flex-start;
+                height: 100vh;
+                width: 100vw;
+                box-sizing: border-box;
+            }
+            #video {
+                display: block;
+                margin: 40px 0 40px 40px;
+                border-radius: 20px;
+                box-shadow: 0 0 30px #00eaff22;
+                border: 3px solid #00eaff22;
+                max-width: 60vw;
+                max-height: 80vh;
+            }
             #controls {
-                margin-top: 20px;
+                background: #23283a;
+                border-radius: 20px;
+                padding: 40px 30px 40px 30px;
+                box-shadow: 0 0 30px #00eaff22;
+                margin: 40px 40px 40px 0;
+                max-width: 400px;
+                min-width: 320px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
             }
             #joystick {
                 width: 200px;
                 height: 200px;
-                background: #eee;
+                background: linear-gradient(135deg, #23283a 60%, #00eaff22 100%);
                 border-radius: 50%;
                 position: relative;
-                margin-bottom: 20px;
-                touch-action: none;
+                margin: 0 auto 15px auto;
+                box-shadow: 0 0 20px #00eaff33;
+                border: 2px solid #00eaff44;
                 user-select: none;
+                touch-action: none;
             }
             #stick {
                 width: 60px;
                 height: 60px;
-                background: #888;
+                background: radial-gradient(circle, #00eaff 60%, #181c25 100%);
                 border-radius: 50%;
                 position: absolute;
                 left: 70px;
                 top: 70px;
                 cursor: pointer;
+                box-shadow: 0 0 20px #00eaff88;
+                border: 2px solid #00eaff;
                 touch-action: none;
+                transition: box-shadow 0.2s;
+            }
+            #stick:active {
+                box-shadow: 0 0 30px #00eaffcc;
             }
             .slider-label {
                 display: block;
-                margin-top: 10px;
+                margin: 30px 0 10px 0;
+                font-size: 1.1em;
+                color: #00eaff;
+                letter-spacing: 2px;
             }
             .slider {
-                width: 300px;
+                width: 100%;
+                max-width: 350px;
+                margin: 0 auto;
+                display: block;
+                accent-color: #00eaff;
+                background: #23283a;
+                border-radius: 10px;
+                height: 8px;
+                box-shadow: 0 0 10px #00eaff44;
+            }
+            #servo_angle_val {
+                margin-left: 12px;
+                color: #00eaff;
+                font-weight: bold;
+                font-size: 1.1em;
+            }
+            .readout {
+                display: inline-block;
+                margin: 0 20px 0 0;
+                font-size: 1.1em;
+                color: #00eaff;
+                font-weight: bold;
+            }
+            #dial {
+                margin: 30px 0 10px 0;
+                width: 180px;
+                height: 120px;
+                display: block;
+            }
+            @media (max-width: 1200px) {
+                #container { flex-direction: column; align-items: center; }
+                #video { margin: 40px auto 0 auto; max-width: 90vw; }
+                #controls { margin: 30px auto 0 auto; }
             }
         </style>
     </head>
     <body>
-        <h1>R2D2 Control Panel</h1>
-        <img src="{{ url_for('video_feed') }}" width="640" height="480" />
-        <div id="controls">
-            <div>
-                <label>Drive Joystick</label>
-                <div id="joystick">
-                    <div id="stick"></div>
-                </div>
-                <span>Throttle: <span id="throttle_val">0</span></span>
-                <span>Steering: <span id="steering_val">0</span></span>
+        <div id="container">
+            <img id="video" src="{{ url_for('video_feed') }}" width="640" height="480" />
+            <div id="controls">
+                <label style="margin-bottom:10px;">Drive Joystick</label>
+                <div id="joystick"><div id="stick"></div></div>
+                <span class="readout">Throttle: <span id="throttle_val">0</span></span>
+                <span class="readout">Steering: <span id="steering_val">0</span></span>
+                <label class="slider-label">Head Servo Angle</label>
+                <input type="range" min="20" max="140" step="1" value="90" id="servo_angle" class="slider">
+                <span id="servo_angle_val">90</span>
+                <svg id="dial" viewBox="0 0 180 120">
+                    <path d="M20,100 A80,80 0 0,1 160,100" fill="none" stroke="#444" stroke-width="16"/>
+                    <path id="dial-arc" d="M20,100 A80,80 0 0,1 160,100" fill="none" stroke="#00eaff" stroke-width="10"/>
+                    <circle id="dial-knob" cx="90" cy="100" r="10" fill="#00eaff" stroke="#fff" stroke-width="3"/>
+                </svg>
             </div>
-            <label class="slider-label">Head Servo Angle</label>
-            <input type="range" min="0" max="180" step="1" value="90" id="servo_angle" class="slider">
-            <span id="servo_angle_val">90</span>
         </div>
         <script>
             // Joystick logic
@@ -193,12 +275,14 @@ def index():
             var centerY = joystick.offsetHeight / 2;
             var maxRadius = joystick.offsetWidth / 2 - stick.offsetWidth / 2;
             var throttle = 0, steering = 0;
+            var last_servo_angle = 90;
+            var servo_min = 20, servo_max = 140;
 
             function sendControls() {
                 $.post('/set_controls', {
                     throttle: throttle,
                     steering: steering,
-                    servo_angle: $('#servo_angle').val()
+                    servo_angle: last_servo_angle
                 });
             }
 
@@ -214,14 +298,15 @@ def index():
                 $('#throttle_val').text(throttle);
                 $('#steering_val').text(steering);
                 sendControls();
+                // Reset servo to center when joystick released
+                if (last_servo_angle !== 90) {
+                    setServo(90);
+                }
             }
 
             stick.addEventListener('mousedown', function(e) { dragging = true; });
             document.addEventListener('mouseup', function(e) {
-                if (dragging) {
-                    dragging = false;
-                    resetStick();
-                }
+                if (dragging) { dragging = false; resetStick(); }
             });
             document.addEventListener('mousemove', function(e) {
                 if (dragging) {
@@ -238,21 +323,19 @@ def index():
                         y = centerY + dy;
                     }
                     updateStick(x, y);
-                    // Map to -1 to 1
                     steering = +(dx / maxRadius).toFixed(2);
                     throttle = +(-(dy / maxRadius)).toFixed(2);
                     $('#throttle_val').text(throttle);
                     $('#steering_val').text(steering);
-                    sendControls();
                 }
+            });
+            document.addEventListener('mouseleave', function(e) {
+                if (dragging) { dragging = false; resetStick(); }
             });
             // Touch support
             stick.addEventListener('touchstart', function(e) { dragging = true; e.preventDefault(); });
             document.addEventListener('touchend', function(e) {
-                if (dragging) {
-                    dragging = false;
-                    resetStick();
-                }
+                if (dragging) { dragging = false; resetStick(); }
             });
             document.addEventListener('touchmove', function(e) {
                 if (dragging && e.touches.length == 1) {
@@ -273,22 +356,47 @@ def index():
                     throttle = +(-(dy / maxRadius)).toFixed(2);
                     $('#throttle_val').text(throttle);
                     $('#steering_val').text(steering);
-                    sendControls();
                 }
             });
 
-            // Initialize stick
-            resetStick();
-
-            // Servo slider
-            let last_servo_val = $('#servo_angle').val();
-            $('#servo_angle').on('input change', function() {
-                $('#servo_angle_val').text($('#servo_angle').val());
-                if ($('#servo_angle').val() != last_servo_val) {
-                    sendControls();
-                    last_servo_val = $('#servo_angle').val();
-                }
+            // Servo slider (only sends on release)
+            function setServo(angle) {
+                angle = Math.max(servo_min, Math.min(servo_max, angle));
+                last_servo_angle = angle;
+                $('#servo_angle_val').text(angle);
+                updateDial(angle);
+                $.post('/set_controls', {
+                    throttle: throttle,
+                    steering: steering,
+                    servo_angle: angle
+                });
+            }
+            $('#servo_angle').on('input', function() {
+                var angle = parseInt($('#servo_angle').val());
+                $('#servo_angle_val').text(angle);
+                updateDial(angle);
             });
+            $('#servo_angle').on('change', function() {
+                var angle = parseInt($('#servo_angle').val());
+                setServo(angle);
+            });
+
+            // Dial logic
+            function updateDial(angle) {
+                // Map angle [20,140] to [160deg, 20deg] (SVG arc)
+                var a = (angle - servo_min) / (servo_max - servo_min);
+                var theta = 160 - a * 140; // 160deg to 20deg
+                var rad = theta * Math.PI / 180;
+                var r = 80;
+                var cx = 90, cy = 100;
+                var x = cx + r * Math.cos(rad);
+                var y = cy - r * Math.sin(rad);
+                var arc = `M20,100 A80,80 0 0,1 160,100`;
+                $("#dial-arc").attr("d", arc);
+                $("#dial-knob").attr("cx", x).attr("cy", y);
+            }
+            // Initialize dial
+            updateDial(90);
         </script>
     </body>
     </html>
