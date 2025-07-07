@@ -40,8 +40,8 @@ audio_process = None
 # Motor and servo control state
 throttle = 0   # -1 (full reverse) to 1 (full forward)
 steering = 0   # -1 (full left) to 1 (full right)
-servo_angle = 90  # 0-180 degrees
-last_servo_angle = 90
+servo_angle = 80  # 20-140 center
+last_servo_angle = 80
 
 # Use RPi.GPIO for servo control
 SERVO_PIN = 18  # BCM numbering
@@ -166,9 +166,9 @@ def index():
             #controls {
                 background: #23283a;
                 border-radius: 20px;
-                padding: 40px 30px 40px 30px;
+                padding: 50px 40px 50px 40px;
                 box-shadow: 0 0 30px #00eaff22;
-                margin: 40px 40px 40px 0;
+                margin: 50px 50px 50px 0;
                 max-width: 400px;
                 min-width: 320px;
                 display: flex;
@@ -257,8 +257,8 @@ def index():
                 <span class="readout">Throttle: <span id="throttle_val">0</span></span>
                 <span class="readout">Steering: <span id="steering_val">0</span></span>
                 <label class="slider-label">Head Servo Angle</label>
-                <input type="range" min="20" max="140" step="1" value="90" id="servo_angle" class="slider">
-                <span id="servo_angle_val">90</span>
+                <input type="range" min="20" max="140" step="1" value="80" id="servo_angle" class="slider">
+                <span id="servo_angle_val">80</span>
                 <svg id="dial" viewBox="0 0 180 120">
                     <path d="M20,100 A80,80 0 0,1 160,100" fill="none" stroke="#444" stroke-width="16"/>
                     <path id="dial-arc" d="M20,100 A80,80 0 0,1 160,100" fill="none" stroke="#00eaff" stroke-width="10"/>
@@ -275,7 +275,7 @@ def index():
             var centerY = joystick.offsetHeight / 2;
             var maxRadius = joystick.offsetWidth / 2 - stick.offsetWidth / 2;
             var throttle = 0, steering = 0;
-            var last_servo_angle = 90;
+            var last_servo_angle = 80;
             var servo_min = 20, servo_max = 140;
 
             function sendControls() {
@@ -299,8 +299,8 @@ def index():
                 $('#steering_val').text(steering);
                 sendControls();
                 // Reset servo to center when joystick released
-                if (last_servo_angle !== 90) {
-                    setServo(90);
+                if (last_servo_angle !== 80) {
+                    setServo(80);
                 }
             }
 
@@ -396,7 +396,7 @@ def index():
                 $("#dial-knob").attr("cx", x).attr("cy", y);
             }
             // Initialize dial
-            updateDial(90);
+            updateDial(80);
         </script>
     </body>
     </html>
@@ -413,7 +413,7 @@ def set_controls():
     try:
         throttle = float(request.form.get('throttle', 0))
         steering = float(request.form.get('steering', 0))
-        new_servo_angle = int(request.form.get('servo_angle', 90))
+        new_servo_angle = int(request.form.get('servo_angle', 80))
         update_motors()
         set_servo(new_servo_angle)
         return 'OK'
@@ -422,6 +422,7 @@ def set_controls():
 
 if __name__ == '__main__':
     try:
+        set_servo(80)
         print("Initializing motors and starting threads")
         random_sound_thread = threading.Thread(target=play_random_segments, daemon=True)
         random_sound_thread.start()
