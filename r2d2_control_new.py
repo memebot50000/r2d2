@@ -28,13 +28,11 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
 
-# Servo setup (RPi.GPIO) - PWM object created ONCE
+# Servo setup (RPi.GPIO)
 SERVO_PIN = 12  # BOARD numbering (physical pin 12, GPIO 18)
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(SERVO_PIN, GPIO.OUT)
 servo_pwm = GPIO.PWM(SERVO_PIN, 50)  # 50Hz for servo
-servo_pwm.start(7.5)  # Neutral position
-
 servo_lock = threading.Lock()
 
 def angle_to_duty(angle):
@@ -43,14 +41,15 @@ def angle_to_duty(angle):
 
 def move_servo(angle):
     with servo_lock:
-        duty = angle_to_duty(angle)
-        servo_pwm.ChangeDutyCycle(duty)
-        time.sleep(0.4)  # Allow servo to reach position
-        servo_pwm.ChangeDutyCycle(0)  # Stop sending pulses (servo holds position)
+        servo_pwm.start(angle_to_duty(angle))
+        time.sleep(0.4)
+        servo_pwm.stop()
 
 # Motor and control state
 throttle = 0
 steering = 0
+servo_angle = 90
+joystick_active = False
 
 def update_motors():
     left_speed = throttle + steering
@@ -130,22 +129,37 @@ def index():
                 font-family: 'Orbitron', Arial, sans-serif;
                 margin: 0;
                 padding: 0;
+                overflow: hidden;
             }
-            h1 {
-                color: #00eaff;
-                text-shadow: 0 0 10px #00eaff88, 0 0 30px #00eaff44;
-                text-align: center;
-                margin-top: 30px;
-                font-size: 2.2em;
-                letter-spacing: 3px;
+            #container {
+                display: flex;
+                flex-direction: row;
+                justify-content: center;
+                align-items: flex-start;
+                height: 100vh;
+                width: 100vw;
+                box-sizing: border-box;
+            }
+            #video {
+                display: block;
+                margin: 40px 0 40px 40px;
+                border-radius: 20px;
+                box-shadow: 0 0 30px #00eaff22;
+                border: 3px solid #00eaff22;
+                max-width: 60vw;
+                max-height: 80vh;
             }
             #controls {
-                margin: 30px auto 0 auto;
                 background: #23283a;
                 border-radius: 20px;
-                padding: 30px 40px 40px 40px;
+                padding: 40px 30px 40px 30px;
                 box-shadow: 0 0 30px #00eaff22;
-                max-width: 500px;
+                margin: 40px 40px 40px 0;
+                max-width: 400px;
+                min-width: 320px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
             }
             #joystick {
                 width: 200px;
@@ -153,7 +167,7 @@ def index():
                 background: linear-gradient(135deg, #23283a 60%, #00eaff22 100%);
                 border-radius: 50%;
                 position: relative;
-                margin: 30px auto 15px auto;
+                margin: 0 auto 15px auto;
                 box-shadow: 0 0 20px #00eaff33;
                 border: 2px solid #00eaff44;
                 user-select: none;
@@ -207,31 +221,25 @@ def index():
                 color: #00eaff;
                 font-weight: bold;
             }
-            #video {
-                display: block;
-                margin: 30px auto 0 auto;
-                border-radius: 20px;
-                box-shadow: 0 0 30px #00eaff22;
-                border: 3px solid #00eaff22;
-            }
-            @media (max-width: 700px) {
-                #controls { padding: 15px 5vw; }
-                #joystick { width: 140px; height: 140px; }
-                #stick { width: 40px; height: 40px; left: 50px; top: 50px; }
+            @media (max-width: 1200px) {
+                #container { flex-direction: column; align-items: center; }
+                #video { margin: 40px auto 0 auto; max-width: 90vw; }
+                #controls { margin: 30px auto 0 auto; }
             }
         </style>
     </head>
     <body>
-        <h1>R2D2 Control Panel</h1>
-        <img id="video" src="{{ url_for('video_feed') }}" width="640" height="480" />
-        <div id="controls">
-            <label>Drive Joystick</label>
-            <div id="joystick"><div id="stick"></div></div>
-            <span class="readout">Throttle: <span id="throttle_val">0</span></span>
-            <span class="readout">Steering: <span id="steering_val">0</span></span>
-            <label class="slider-label">Head Servo Angle</label>
-            <input type="range" min="0" max="180" step="1" value="90" id="servo_angle" class="slider">
-            <span id="servo_angle_val">90</span>
+        <div id="container">
+            <img id="video" src="{{ url_for('video_feed') }}" width="640" height="480" />
+            <div id="controls">
+                <label style="margin-bottom:10px;">Drive Joystick</label>
+                <div id="joystick"><div id="stick"></div></div>
+                <span class="readout">Throttle: <span id="throttle_val">0</span></span>
+                <span class="readout">Steering: <span id="steering_val">0</span></span>
+                <label class="slider-label">Head Servo Angle</label>
+                <input type="range" min="0" max="180" step="1" value="90" id="servo_angle" class="slider">
+                <span id="servo_angle_val">90</span>
+            </div>
         </div>
         <script>
             // Joystick logic
@@ -242,12 +250,21 @@ def index():
             var centerY = joystick.offsetHeight / 2;
             var maxRadius = joystick.offsetWidth / 2 - stick.offsetWidth / 2;
             var throttle = 0, steering = 0;
+            var last_servo_angle = 90;
+            var servo_angle = 90;
+            var isJoystickActive = false;
+            var lastSentJoystick = false;
 
             function sendControls() {
                 $.post('/set_controls', {
                     throttle: throttle,
                     steering: steering
                 });
+            }
+
+            function sendServo(angle) {
+                $.post('/set_servo', {servo_angle: angle});
+                last_servo_angle = angle;
             }
 
             function updateStick(x, y) {
@@ -262,9 +279,14 @@ def index():
                 $('#throttle_val').text(throttle);
                 $('#steering_val').text(steering);
                 sendControls();
+                // Reset servo to center when joystick released
+                if (last_servo_angle !== 90) {
+                    sendServo(90);
+                }
+                isJoystickActive = false;
             }
 
-            stick.addEventListener('mousedown', function(e) { dragging = true; });
+            stick.addEventListener('mousedown', function(e) { dragging = true; isJoystickActive = true; });
             document.addEventListener('mouseup', function(e) {
                 if (dragging) { dragging = false; resetStick(); }
             });
@@ -288,10 +310,16 @@ def index():
                     $('#throttle_val').text(throttle);
                     $('#steering_val').text(steering);
                     sendControls();
+                    // Move servo proportional to joystick X, map [-1,1] to [45,135]
+                    var servoPos = Math.round(90 + steering * 45);
+                    if (servoPos !== last_servo_angle) {
+                        sendServo(servoPos);
+                    }
+                    isJoystickActive = true;
                 }
             });
             // Touch support
-            stick.addEventListener('touchstart', function(e) { dragging = true; e.preventDefault(); });
+            stick.addEventListener('touchstart', function(e) { dragging = true; isJoystickActive = true; e.preventDefault(); });
             document.addEventListener('touchend', function(e) {
                 if (dragging) { dragging = false; resetStick(); }
             });
@@ -315,6 +343,11 @@ def index():
                     $('#throttle_val').text(throttle);
                     $('#steering_val').text(steering);
                     sendControls();
+                    var servoPos = Math.round(90 + steering * 45);
+                    if (servoPos !== last_servo_angle) {
+                        sendServo(servoPos);
+                    }
+                    isJoystickActive = true;
                 }
             });
 
@@ -322,13 +355,10 @@ def index():
             resetStick();
 
             // Servo slider (only sends when changed)
-            let last_servo_val = $('#servo_angle').val();
             $('#servo_angle').on('input change', function() {
                 $('#servo_angle_val').text($('#servo_angle').val());
-                if ($('#servo_angle').val() != last_servo_val) {
-                    $.post('/set_servo', {servo_angle: $('#servo_angle').val()});
-                    last_servo_val = $('#servo_angle').val();
-                }
+                var angle = parseInt($('#servo_angle').val());
+                sendServo(angle);
             });
         </script>
     </body>
@@ -370,7 +400,10 @@ if __name__ == '__main__':
         running = False
         left_motor.stop()
         right_motor.stop()
-        servo_pwm.stop()
+        try:
+            servo_pwm.stop()
+        except:
+            pass
         GPIO.cleanup()
         camera.release()
         play_audio("sound2.mp3")
