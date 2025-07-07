@@ -43,6 +43,10 @@ throttle = 0
 steering = 0
 motor_lock = threading.Lock()
 
+# Add a global for last servo command time
+last_servo_command_time = 0
+SERVO_COMMAND_MIN_INTERVAL = 0.1  # seconds (10 Hz max)
+
 # Helper to convert angle to duty cycle for 0-180 deg
 # Most servos: 2.5% (0 deg) to 12.5% (180 deg)
 def angle_to_duty(angle):
@@ -131,11 +135,19 @@ def set_controls():
 
 @app.route('/set_servo', methods=['POST'])
 def set_servo():
+    global last_servo_command_time
     try:
         angle = int(request.form.get('servo_angle', 90))
+        now = time.time()
+        if now - last_servo_command_time < SERVO_COMMAND_MIN_INTERVAL:
+            print(f"[DEBUG] /set_servo: rate limited (angle={angle})")
+            return 'Rate limited', 429
+        last_servo_command_time = now
+        print(f"[DEBUG] /set_servo called with angle={angle}")
         threading.Thread(target=move_servo, args=(angle,), daemon=True).start()
         return 'OK'
     except Exception as e:
+        print(f"[DEBUG] /set_servo error: {e}")
         return f'Error: {e}', 400
 
 if __name__ == '__main__':
