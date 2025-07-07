@@ -197,6 +197,38 @@ def play_random_segments():
         play_audio("sound1.mp3", duration=2)
         time.sleep(random.uniform(5, 15))
 
+def cleanup():
+    global running
+    running = False
+    print("Stopping motors and releasing camera")
+    try:
+        left_motor.stop()
+    except Exception:
+        pass
+    try:
+        right_motor.stop()
+    except Exception:
+        pass
+    try:
+        pwm.stop()
+        GPIO.cleanup()
+    except Exception:
+        pass
+    try:
+        camera.release()
+    except Exception:
+        pass
+    try:
+        play_audio("sound2.mp3")
+    except Exception:
+        pass
+    if audio_process:
+        try:
+            audio_process.wait()
+        except Exception:
+            pass
+    print("Cleanup complete")
+
 @app.route('/')
 def index():
     return render_template_string('''
@@ -389,8 +421,7 @@ def set_servo():
 
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
-    global running
-    running = False
+    cleanup()
     func = request.environ.get('werkzeug.server.shutdown')
     if func:
         func()
@@ -410,14 +441,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
     finally:
-        running = False
-        print("Stopping motors and releasing camera")
-        left_motor.stop()
-        right_motor.stop()
-        pwm.stop()
-        GPIO.cleanup()
-        camera.release()
-        play_audio("sound2.mp3")
-        if audio_process:
-            audio_process.wait()
-        print("Cleanup complete") 
+        cleanup() 
