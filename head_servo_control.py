@@ -422,10 +422,7 @@ def set_servo():
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
     cleanup()
-    func = request.environ.get('werkzeug.server.shutdown')
-    if func:
-        func()
-    return 'Server shutting down...'
+    os._exit(0)
 
 if __name__ == '__main__':
     try:
