@@ -11,7 +11,7 @@ import random
 
 app = Flask(__name__)
 
-# Camera setup (NO face-following for servo)
+# Camera setup (no face-following)
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 if not camera.isOpened():
     print("Error: Could not open camera.")
@@ -27,7 +27,6 @@ left_motor = Motor(forward=22, backward=23, enable=13)
 SERVO_PIN = 12  # BOARD numbering (physical pin 12, GPIO 18)
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(SERVO_PIN, GPIO.OUT)
-servo_pwm = GPIO.PWM(SERVO_PIN, 50)  # 50Hz for servo
 servo_lock = threading.Lock()
 
 def angle_to_duty(angle):
@@ -35,10 +34,12 @@ def angle_to_duty(angle):
     return float(angle) / 10.0 + 5.0
 
 def move_servo(angle):
+    # Output a single PWM pulse to the servo, then stop
     with servo_lock:
-        servo_pwm.start(angle_to_duty(angle))
+        pwm = GPIO.PWM(SERVO_PIN, 50)
+        pwm.start(angle_to_duty(angle))
         time.sleep(0.4)
-        servo_pwm.stop()
+        pwm.stop()
 
 # Motor and control state
 throttle = 0
@@ -265,7 +266,7 @@ def index():
                 $('#throttle_val').text(throttle);
                 $('#steering_val').text(steering);
                 sendControls();
-                // Reset servo to center when joystick released
+                // Reset servo to center (90) when joystick released
                 if (last_servo_angle !== 90) {
                     sendServo(90);
                 }
@@ -383,7 +384,7 @@ if __name__ == '__main__':
         running = False
         left_motor.stop()
         right_motor.stop()
-        # Do NOT cleanup GPIO as requested
+        # Do NOT cleanup GPIO as requested for the servo
         camera.release()
         play_audio("sound2.mp3")
         if audio_process:
