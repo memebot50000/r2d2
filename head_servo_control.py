@@ -74,14 +74,7 @@ current_angle = 0
 movement_command = None
 movement_start_time = 0
 
-# Optical Flow Parameters
-feature_params = dict(maxCorners=100, qualityLevel=0.3, minDistance=7, blockSize=7)
-lk_params = dict(winSize=(15, 15), maxLevel=2, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
-color = np.random.randint(0, 255, (100, 3))
-
 # Global variables
-prev_frame = None
-prev_points = None
 running = True
 audio_lock = threading.Lock()
 audio_process = None
@@ -188,50 +181,11 @@ def head_servo_control():
         time.sleep(0.05)
 
 def generate_frames():
-    global prev_frame, prev_points
     while running:
         ret, frame = camera.read()
         if not ret:
             break
-        
-        frame = cv2.flip(frame, -1)  # Flip for upside-down camera
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-        
-        if len(faces) > 0:
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-                cv2.drawMarker(frame, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-                cv2.drawMarker(frame, (x+w, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-                cv2.drawMarker(frame, (x, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-                cv2.drawMarker(frame, (x+w, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
-            
-            prev_points = None
-        else:
-            if prev_frame is not None:
-                if prev_points is None:
-                    prev_points = cv2.goodFeaturesToTrack(prev_frame, mask=None, **feature_params)
-                
-                if prev_points is not None:
-                    next_points, status, _ = cv2.calcOpticalFlowPyrLK(prev_frame, gray, prev_points, None, **lk_params)
-                    
-                    if next_points is not None:
-                        good_new = next_points[status == 1]
-                        good_old = prev_points[status == 1]
-                        
-                        for i, (new, old) in enumerate(zip(good_new, good_old)):
-                            a, b = new.ravel()
-                            c, d = old.ravel()
-                            frame = cv2.line(frame, (int(a), int(b)), (int(c), int(d)), color[i].tolist(), 2)
-                            frame = cv2.circle(frame, (int(a), int(b)), 5, color[i].tolist(), -1)
-                    
-                    prev_points = good_new.reshape(-1, 1, 2)
-        
-        prev_frame = gray
-        
-        cv2.putText(frame, f"Movement: {movement_command if movement_command else 'None'}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
+        # No flipping, no optical flow, just raw camera feed
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -246,61 +200,118 @@ def play_random_segments():
 def index():
     return render_template_string('''
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
         <title>R2D2 Control Panel</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
         <style>
-            #controls {
-                margin-top: 20px;
+            html, body {
+                height: 100%;
+                margin: 0;
+                padding: 0;
+                background: #181a20;
+                color: #f5f6fa;
+                font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
+                overflow: hidden;
             }
-            .arrow, .servo-btn {
-                font-size: 24px;
-                margin: 0 10px;
+            body {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+                width: 100vw;
+            }
+            #main-content {
+                flex: 1 1 auto;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                width: 100vw;
+                overflow: hidden;
+            }
+            #camera-container {
+                width: 100vw;
+                height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: #111217;
+                position: absolute;
+                top: 0; left: 0; right: 0; bottom: 0;
+                z-index: 1;
+            }
+            #camera-feed {
+                width: 100vw;
+                height: 100vh;
+                object-fit: cover;
+                background: #000;
+                display: block;
+            }
+            #servo-controls {
+                position: absolute;
+                bottom: 40px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 2;
+                display: flex;
+                gap: 18px;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                padding: 18px 32px;
+            }
+            .servo-btn {
+                font-size: 1.2rem;
+                font-weight: 500;
+                color: #f5f6fa;
+                background: linear-gradient(90deg, #23242a 0%, #232a3a 100%);
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
                 cursor: pointer;
-                padding: 5px 10px;
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                background: #f0f0f0;
+                transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+                outline: none;
+                box-shadow: 0 2px 8px 0 #0006;
+                letter-spacing: 0.04em;
             }
-            .servo-btn.selected {
-                background: #aeeaae;
-                border-color: #4caf50;
+            .servo-btn.selected, .servo-btn:hover {
+                background: linear-gradient(90deg, #4e8cff 0%, #1e3c72 100%);
+                color: #fff;
+                box-shadow: 0 4px 16px 0 #4e8cff44;
+            }
+            h1 {
+                display: none;
+            }
+            @media (max-width: 900px) {
+                #servo-controls {
+                    flex-direction: column;
+                    bottom: 20px;
+                    padding: 12px 10px;
+                    gap: 10px;
+                }
+                .servo-btn {
+                    font-size: 1rem;
+                    padding: 10px 12px;
+                }
             }
         </style>
     </head>
     <body>
-        <h1>R2D2 Control Panel</h1>
-        <img src="{{ url_for('video_feed') }}" width="640" height="480" />
-        <div id="controls">
-            <span class="arrow" id="left">&#8592;</span>
-            <span class="arrow" id="right">&#8594;</span>
-        </div>
-        <div id="servo-controls" style="margin-top:20px;">
-            <span class="servo-btn" data-pos="left">Left</span>
-            <span class="servo-btn" data-pos="left-center">Left-Center</span>
-            <span class="servo-btn" data-pos="center">Center</span>
-            <span class="servo-btn" data-pos="right-center">Right-Center</span>
-            <span class="servo-btn" data-pos="right">Right</span>
+        <div id="main-content">
+            <div id="camera-container">
+                <img id="camera-feed" src="{{ url_for('video_feed') }}" alt="Camera Feed" />
+            </div>
+            <div id="servo-controls">
+                <button class="servo-btn" data-pos="left">Left</button>
+                <button class="servo-btn" data-pos="left-center">Left-Center</button>
+                <button class="servo-btn" data-pos="center">Center</button>
+                <button class="servo-btn" data-pos="right-center">Right-Center</button>
+                <button class="servo-btn" data-pos="right">Right</button>
+            </div>
         </div>
         <script>
-            function sendCommand(cmd) {
-                $.post('/control', {command: cmd});
-            }
-            $('#left').click(function() { sendCommand('left'); });
-            $('#right').click(function() { sendCommand('right'); });
-            $(document).keydown(function(e) {
-                switch(e.which) {
-                    case 37: // left arrow
-                        sendCommand('left');
-                        break;
-                    case 39: // right arrow
-                        sendCommand('right');
-                        break;
-                    default: return;
-                }
-                e.preventDefault();
-            });
             function setServoPosition(pos) {
                 $.post('/set_servo', {position: pos}, function() {
                     $('.servo-btn').removeClass('selected');
