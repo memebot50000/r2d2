@@ -19,17 +19,17 @@ def angle_to_duty(angle):
     return 2.5 + (angle / 180.0) * 10.0
 
 try:
-    print("Sweeping servo from 20 to 140 and back in 2 degree steps. Press Ctrl+C to exit.")
+    print("Sweeping servo from 20 to 140 and back in 3 degree steps. Press Ctrl+C to exit.")
     while True:
         # Sweep up
-        for angle in range(20, 141, 2):
+        for angle in range(20, 141, 3):
             duty = angle_to_duty(angle)
             pwm.ChangeDutyCycle(duty)
             print(f"Angle: {angle} Duty: {duty:.2f}")
             time.sleep(0.04)
             pwm.ChangeDutyCycle(0)  # Reduce jitter by stopping signal briefly
         # Sweep down
-        for angle in range(140, 19, -2):
+        for angle in range(140, 19, -3):
             duty = angle_to_duty(angle)
             pwm.ChangeDutyCycle(duty)
             print(f"Angle: {angle} Duty: {duty:.2f}")
