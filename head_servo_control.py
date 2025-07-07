@@ -185,7 +185,8 @@ def generate_frames():
         ret, frame = camera.read()
         if not ret:
             break
-        # No flipping, no optical flow, just raw camera feed
+        # Flip the frame by 180 degrees
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -281,8 +282,79 @@ def index():
                 color: #fff;
                 box-shadow: 0 4px 16px 0 #4e8cff44;
             }
-            h1 {
-                display: none;
+            #dial-container {
+                position: absolute;
+                top: 40px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 2;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                padding: 18px 32px;
+            }
+            #dial-label {
+                color: #f5f6fa;
+                font-size: 1.1rem;
+                margin-bottom: 8px;
+                text-align: center;
+                letter-spacing: 0.04em;
+            }
+            #dial {
+                width: 120px;
+                height: 60px;
+                position: relative;
+                margin-bottom: 0;
+            }
+            #dial-bg {
+                width: 100%;
+                height: 100%;
+                border-radius: 60px 60px 0 0;
+                background: linear-gradient(90deg, #23242a 0%, #232a3a 100%);
+                border-bottom: 4px solid #4e8cff;
+                position: absolute;
+                left: 0; top: 0;
+            }
+            #dial-needle {
+                width: 4px;
+                height: 60px;
+                background: #4e8cff;
+                position: absolute;
+                left: 50%;
+                bottom: 0;
+                transform: translateX(-50%) rotate(-80deg);
+                transform-origin: bottom center;
+                border-radius: 2px;
+                box-shadow: 0 0 8px #4e8cff88;
+                transition: transform 0.4s cubic-bezier(.4,2,.3,1);
+            }
+            #dial-ticks {
+                position: absolute;
+                width: 100%;
+                height: 100%;
+                left: 0; top: 0;
+                pointer-events: none;
+            }
+            .dial-tick {
+                position: absolute;
+                width: 2px;
+                height: 12px;
+                background: #888;
+                left: 50%;
+                bottom: 0;
+                transform-origin: bottom center;
+            }
+            .dial-tick-label {
+                position: absolute;
+                color: #aaa;
+                font-size: 0.9rem;
+                left: 50%;
+                bottom: 12px;
+                transform: translateX(-50%) translateY(0) rotate(0deg);
+                white-space: nowrap;
             }
             @media (max-width: 900px) {
                 #servo-controls {
@@ -295,6 +367,14 @@ def index():
                     font-size: 1rem;
                     padding: 10px 12px;
                 }
+                #dial-container {
+                    top: 10px;
+                    padding: 10px 8px;
+                }
+                #dial {
+                    width: 80px;
+                    height: 40px;
+                }
             }
         </style>
     </head>
@@ -302,6 +382,14 @@ def index():
         <div id="main-content">
             <div id="camera-container">
                 <img id="camera-feed" src="{{ url_for('video_feed') }}" alt="Camera Feed" />
+            </div>
+            <div id="dial-container">
+                <div id="dial-label">Head Position</div>
+                <div id="dial">
+                    <div id="dial-bg"></div>
+                    <div id="dial-needle"></div>
+                    <div id="dial-ticks"></div>
+                </div>
             </div>
             <div id="servo-controls">
                 <button class="servo-btn" data-pos="left">Left</button>
@@ -312,10 +400,49 @@ def index():
             </div>
         </div>
         <script>
+            // Dial logic
+            const SERVO_POSITIONS = {
+                'left': 20,
+                'left-center': 50,
+                'center': 80,
+                'right-center': 110,
+                'right': 140
+            };
+            const DIAL_MIN = 20;
+            const DIAL_MAX = 140;
+            const DIAL_SWEEP = 160; // degrees for the dial arc
+            const DIAL_START = -80; // leftmost angle
+            function updateDial(posName) {
+                const angle = SERVO_POSITIONS[posName] || 80;
+                const rel = (angle - DIAL_MIN) / (DIAL_MAX - DIAL_MIN);
+                const deg = DIAL_START + rel * DIAL_SWEEP;
+                $("#dial-needle").css('transform', `translateX(-50%) rotate(${deg}deg)`);
+                $(".servo-btn").removeClass('selected');
+                $(`.servo-btn[data-pos='${posName}']`).addClass('selected');
+            }
+            // Draw dial ticks and labels
+            function drawDialTicks() {
+                const ticks = [
+                    {pos: 'left', label: 'Left'},
+                    {pos: 'left-center', label: 'L-C'},
+                    {pos: 'center', label: 'Center'},
+                    {pos: 'right-center', label: 'R-C'},
+                    {pos: 'right', label: 'Right'}
+                ];
+                let html = '';
+                for (let i = 0; i < ticks.length; ++i) {
+                    const rel = i / (ticks.length - 1);
+                    const deg = DIAL_START + rel * DIAL_SWEEP;
+                    html += `<div class='dial-tick' style='transform:translateX(-50%) rotate(${deg}deg) translateY(-4px);height:16px;background:#4e8cff;'></div>`;
+                    html += `<div class='dial-tick-label' style='transform:translateX(-50%) rotate(${deg}deg) translateY(-32px);'>${ticks[i].label}</div>`;
+                }
+                $("#dial-ticks").html(html);
+            }
+            drawDialTicks();
+            // UI logic
             function setServoPosition(pos) {
                 $.post('/set_servo', {position: pos}, function() {
-                    $('.servo-btn').removeClass('selected');
-                    $('.servo-btn[data-pos="'+pos+'"]').addClass('selected');
+                    updateDial(pos);
                 });
             }
             $('.servo-btn').click(function() {
@@ -324,7 +451,7 @@ def index():
             });
             // Highlight the current position on load
             $(function() {
-                setServoPosition('{{ current_servo_position }}');
+                updateDial('{{ current_servo_position }}');
             });
         </script>
     </body>
