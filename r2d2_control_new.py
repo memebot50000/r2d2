@@ -11,7 +11,12 @@ import random
 
 app = Flask(__name__)
 
-# Camera setup (no face-following)
+# Camera and face detection setup
+cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
+if not os.path.isfile(cascade_path):
+    print(f"Error: Cascade file not found at {cascade_path}")
+    exit()
+face_cascade = cv2.CascadeClassifier(cascade_path)
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 if not camera.isOpened():
     print("Error: Could not open camera.")
@@ -23,21 +28,19 @@ camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 right_motor = Motor(forward=27, backward=17, enable=12)
 left_motor = Motor(forward=22, backward=23, enable=13)
 
-# Servo setup (RPi.GPIO)
+# Servo setup (RPi.GPIO, 100Hz)
 SERVO_PIN = 12  # BOARD numbering (physical pin 12, GPIO 18)
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(SERVO_PIN, GPIO.OUT)
 servo_lock = threading.Lock()
 
-def angle_to_duty(angle):
-    # Map 0-180 degrees to 5-25% duty cycle (typical for hobby servos)
-    return float(angle) / 10.0 + 5.0
+def AngleToDuty(pos):
+    return float(pos)/10.+5.
 
 def move_servo(angle):
-    # Output a single PWM pulse to the servo, then stop
     with servo_lock:
-        pwm = GPIO.PWM(SERVO_PIN, 50)
-        pwm.start(angle_to_duty(angle))
+        pwm = GPIO.PWM(SERVO_PIN, 100)
+        pwm.start(AngleToDuty(angle))
         time.sleep(0.4)
         pwm.stop()
 
@@ -71,6 +74,10 @@ def generate_frames():
         if not ret:
             break
         frame = cv2.flip(frame, -1)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 200, 255), 2)
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -266,7 +273,7 @@ def index():
                 $('#throttle_val').text(throttle);
                 $('#steering_val').text(steering);
                 sendControls();
-                // Reset servo to center (90) when joystick released
+                // Reset servo to center when joystick released
                 if (last_servo_angle !== 90) {
                     sendServo(90);
                 }
@@ -384,7 +391,7 @@ if __name__ == '__main__':
         running = False
         left_motor.stop()
         right_motor.stop()
-        # Do NOT cleanup GPIO as requested for the servo
+        GPIO.cleanup()
         camera.release()
         play_audio("sound2.mp3")
         if audio_process:
