@@ -12,26 +12,17 @@ import subprocess
 import random
 import RPi.GPIO as GPIO
 import urllib.request
-import onnxruntime as ort
+import monodepth2
 
 app = Flask(__name__)
 
-# --- SC-Depth ONNX setup ---
-SCDEPTH_ONNX_PATH = "models/sc_depth_v3_nyu_sim.onnx"
-ort_session = ort.InferenceSession(SCDEPTH_ONNX_PATH, providers=['CPUExecutionProvider'])
+# --- Monodepth2 setup ---
+monodepth2_model = monodepth2.Monodepth2()
 
-def estimate_depth_scdepth(frame):
-    # Preprocess: resize to 384x384, normalize to [0,1], BGR->RGB
-    input_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    input_img = cv2.resize(input_img, (384, 384))
-    input_img = input_img.astype(np.float32) / 255.0
-    input_img = np.transpose(input_img, (2, 0, 1))[None, ...]  # (1,3,384,384)
-    # Run inference
-    ort_inputs = {ort_session.get_inputs()[0].name: input_img}
-    ort_outs = ort_session.run(None, ort_inputs)
-    depth = ort_outs[0][0, 0]
-    # Postprocess: resize to original frame, normalize, colorize
-    depth = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
+def estimate_depth_monodepth2(frame):
+    # frame: numpy array (BGR, OpenCV)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    depth = monodepth2_model.predict(rgb)  # Returns (H, W) float32
     depth = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
     depth_color = cv2.applyColorMap(depth, cv2.COLORMAP_JET)
     return depth_color
@@ -111,7 +102,7 @@ last_depth_lock = threading.Lock()
 last_face_boxes = []
 last_face_lock = threading.Lock()
 
-# Async depth thread (ONNX SC-Depth)
+# Async depth thread (Monodepth2)
 class DepthThread(threading.Thread):
     def __init__(self, camera):
         super().__init__(daemon=True)
@@ -124,9 +115,12 @@ class DepthThread(threading.Thread):
             if not ret:
                 time.sleep(0.01)
                 continue
-            depth_color = estimate_depth_scdepth(frame)
-            with last_depth_lock:
-                last_depth_map = depth_color
+            with depth_perception_lock:
+                enabled = depth_perception_enabled
+            if enabled:
+                depth_color = estimate_depth_monodepth2(frame)
+                with last_depth_lock:
+                    last_depth_map = depth_color
             time.sleep(0.03)  # ~30 FPS
 
 depth_thread = DepthThread(camera)
@@ -502,7 +496,7 @@ def index():
             }
             #depth-perception-switch-container {
                 position: absolute;
-                top: 320px;
+                top: 320px; /* Adjust position to be below face detection switch */
                 left: 40px;
                 z-index: 4;
                 display: flex;
