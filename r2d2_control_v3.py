@@ -12,8 +12,8 @@ app = Flask(__name__)
 
 # Motor Initialization
 from gpiozero import Motor
-left_motor = Motor(forward=27, backward=17, enable=12)
-right_motor = Motor(forward=22, backward=23, enable=13)
+right_motor = Motor(forward=17, backward=27, enable=12)
+left_motor = Motor(forward=23, backward=22, enable=13)
 
 # Head Servo Initialization
 SERVO_PIN = 18  # BCM numbering
@@ -74,6 +74,10 @@ def apply_dead_zone(value, dead_zone):
 default_armed = False
 motors_armed = default_armed
 motors_armed_lock = threading.Lock()
+
+# Depth Perception State
+depth_perception_enabled = False
+depth_perception_lock = threading.Lock()
 
 # --- Utility Functions ---
 def play_audio(file_path, duration=None):
@@ -186,18 +190,28 @@ def generate_frames():
             break
         # Flip the frame for upside-down camera (like v1)
         frame = cv2.flip(frame, -1)
+        # Depth perception mode
+        with depth_perception_lock:
+            show_depth = depth_perception_enabled
+        if show_depth:
+            # Simple monocular depth effect: use Laplacian edge magnitude as a fake depth map
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            depth = cv2.Laplacian(gray, cv2.CV_64F)
+            depth = np.absolute(depth)
+            depth = np.uint8(255 * depth / np.max(depth)) if np.max(depth) > 0 else np.zeros_like(gray)
+            depth_color = cv2.applyColorMap(depth, cv2.COLORMAP_JET)
+            frame = cv2.addWeighted(frame, 0.4, depth_color, 0.6, 0)
         # Face detection mode
         with face_detection_lock:
             detect_faces = face_detection_enabled
-        if detect_faces:
+        if detect_faces and not show_depth:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
             for (x, y, w, h) in faces:
-                # Themed box: blue border, shadow, rounded corners
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (78, 140, 255), 4)  # BGR for #4e8cff
-                # Optionally, add a semi-transparent overlay
+                # Blue box: #4e8cff (BGR: 255, 142, 72)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 142, 72), 4)
                 overlay = frame.copy()
-                cv2.rectangle(overlay, (x, y), (x+w, y+h), (78, 140, 255), -1)
+                cv2.rectangle(overlay, (x, y), (x+w, y+h), (255, 142, 72), -1)
                 alpha = 0.15
                 cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
         # Stream the full high-res frame
@@ -405,6 +419,26 @@ def index():
                 letter-spacing: 0.04em;
                 margin-left: 8px;
             }
+            #depth-perception-switch-container {
+                position: absolute;
+                top: 320px;
+                left: 40px;
+                z-index: 4;
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                padding: 14px 24px;
+            }
+            #depth-perception-label {
+                font-size: 1.1rem;
+                font-weight: 500;
+                color: #f5f6fa;
+                letter-spacing: 0.04em;
+                margin-left: 8px;
+            }
             @media (max-width: 900px) {
                 #servo-controls {
                     flex-direction: column;
@@ -452,6 +486,13 @@ def index():
                   <span class="slider"></span>
                 </label>
                 <span id="face-detect-label">Face Detection Off</span>
+            </div>
+            <div id="depth-perception-switch-container">
+                <label class="switch">
+                  <input type="checkbox" id="depth-perception-switch">
+                  <span class="slider"></span>
+                </label>
+                <span id="depth-perception-label">Depth Perception Off</span>
             </div>
             <div id="servo-controls">
                 <button class="servo-btn" data-pos="left">Left</button>
@@ -540,6 +581,23 @@ def index():
             });
             // Set initial state
             setFaceDetectionState(false);
+            // Depth perception switch logic
+            var depthSwitch = document.getElementById('depth-perception-switch');
+            var depthLabel = document.getElementById('depth-perception-label');
+            function setDepthPerceptionState(enabled) {
+                $.post('/depth_perception', {state: enabled ? 'true' : 'false'});
+                depthLabel.textContent = enabled ? 'Depth Perception On' : 'Depth Perception Off';
+                if (enabled) {
+                    depthLabel.style.color = '#4e8cff';
+                } else {
+                    depthLabel.style.color = '#f5f6fa';
+                }
+            }
+            depthSwitch.addEventListener('change', function() {
+                setDepthPerceptionState(depthSwitch.checked);
+            });
+            // Set initial state
+            setDepthPerceptionState(false);
             // Shutdown button logic
             $('#shutdown-btn').click(function() {
                 if (confirm('Are you sure you want to shutdown the server?')) {
@@ -596,6 +654,14 @@ def face_detection():
     state = request.form.get('state')
     with face_detection_lock:
         face_detection_enabled = (state == 'true')
+    return 'OK'
+
+@app.route('/depth_perception', methods=['POST'])
+def depth_perception():
+    global depth_perception_enabled
+    state = request.form.get('state')
+    with depth_perception_lock:
+        depth_perception_enabled = (state == 'true')
     return 'OK'
 
 @app.route('/shutdown', methods=['POST'])
