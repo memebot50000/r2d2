@@ -1,7 +1,3 @@
-# NOTE: You must add the Depth Anything model definition files from https://github.com/LiheYoung/Depth-Anything
-# Place dpt.py and any required files in a depth_anything/ directory in your project root.
-# This code assumes you have depth_anything_v2_vits.pth in the project root.
-
 import os
 import time
 import cv2
@@ -16,16 +12,17 @@ import monodepth2
 
 app = Flask(__name__)
 
-# --- Monodepth2 setup ---
-monodepth2_model = monodepth2.Monodepth2()
+# Initialize Monodepth2
+md = monodepth2.monodepth2()
 
-def estimate_depth_monodepth2(frame):
-    # frame: numpy array (BGR, OpenCV)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    depth = monodepth2_model.predict(rgb)  # Returns (H, W) float32
-    depth = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-    depth_color = cv2.applyColorMap(depth, cv2.COLORMAP_JET)
-    return depth_color
+# Shared cache for async depth and face detection
+last_depth_map = None
+last_depth_lock = threading.Lock()
+last_face_boxes = []
+last_face_lock = threading.Lock()
+
+depth_perception_enabled = False
+depth_perception_lock = threading.Lock()
 
 # Motor Initialization
 from gpiozero import Motor
@@ -92,16 +89,6 @@ default_armed = False
 motors_armed = default_armed
 motors_armed_lock = threading.Lock()
 
-# Depth Perception State
-depth_perception_enabled = False
-depth_perception_lock = threading.Lock()
-
-# Shared cache for async depth and face detection
-last_depth_map = None
-last_depth_lock = threading.Lock()
-last_face_boxes = []
-last_face_lock = threading.Lock()
-
 # Async depth thread (Monodepth2)
 class DepthThread(threading.Thread):
     def __init__(self, camera):
@@ -118,10 +105,14 @@ class DepthThread(threading.Thread):
             with depth_perception_lock:
                 enabled = depth_perception_enabled
             if enabled:
-                depth_color = estimate_depth_monodepth2(frame)
+                # Evaluate depth using Monodepth2
+                depth = md.eval(frame)
+                # Normalize and colorize for overlay
+                depth_norm = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                depth_color = cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
                 with last_depth_lock:
                     last_depth_map = depth_color
-            time.sleep(0.03)  # ~30 FPS
+            time.sleep(0.2)  # 5 FPS for low lag
 
 depth_thread = DepthThread(camera)
 depth_thread.start()
