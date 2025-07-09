@@ -171,9 +171,9 @@ def generate_frames():
         ret, frame = camera.read()
         if not ret:
             break
-        # Flip the frame by 180 degrees
-        frame = cv2.rotate(frame, cv2.ROTATE_180)
-        # Transmit the full camera image (no zoom/padding)
+        # Flip the frame for upside-down camera (like v1)
+        frame = cv2.flip(frame, -1)
+        # Stream the full high-res frame
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -228,11 +228,15 @@ def index():
                 z-index: 1;
             }
             #camera-feed {
-                width: 100vw;
-                height: 100vh;
-                object-fit: cover;
+                width: 1280px;
+                height: 720px;
+                max-width: 95vw;
+                max-height: 90vh;
+                object-fit: contain;
                 background: #000;
                 display: block;
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
             }
             #joystick-container {
                 position: absolute;
@@ -247,6 +251,60 @@ def index():
                 display: flex;
                 align-items: center;
                 justify-content: center;
+            }
+            #arm-switch-container {
+                position: absolute;
+                top: 200px;
+                left: 40px;
+                z-index: 4;
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                padding: 14px 24px;
+            }
+            .switch {
+                position: relative;
+                display: inline-block;
+                width: 60px;
+                height: 34px;
+            }
+            .switch input {display:none;}
+            .slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background: #232a3a;
+                border-radius: 34px;
+                transition: .4s;
+            }
+            .slider:before {
+                position: absolute;
+                content: "";
+                height: 26px;
+                width: 26px;
+                left: 4px;
+                bottom: 4px;
+                background: #f5f6fa;
+                border-radius: 50%;
+                transition: .4s;
+                box-shadow: 0 2px 8px 0 #0006;
+            }
+            input:checked + .slider {
+                background: linear-gradient(90deg, #4e8cff 0%, #1e3c72 100%);
+            }
+            input:checked + .slider:before {
+                transform: translateX(26px);
+                background: #4e8cff;
+            }
+            #arm-label {
+                font-size: 1.1rem;
+                font-weight: 500;
+                color: #f5f6fa;
+                letter-spacing: 0.04em;
+                margin-left: 8px;
             }
             #servo-controls {
                 position: absolute;
