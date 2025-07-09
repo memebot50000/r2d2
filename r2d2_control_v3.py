@@ -7,6 +7,7 @@ from flask import Flask, Response, render_template_string, request
 import subprocess
 import random
 import RPi.GPIO as GPIO
+import urllib.request
 
 app = Flask(__name__)
 
@@ -78,6 +79,84 @@ motors_armed_lock = threading.Lock()
 # Depth Perception State
 depth_perception_enabled = False
 depth_perception_lock = threading.Lock()
+
+# --- MiDaS neural network setup for monocular depth ---
+MIDAS_ONNX_URL = "https://github.com/isl-org/MiDaS/releases/download/v2_1_small/model-small.onnx"
+MIDAS_ONNX_PATH = "midas_v21_small.onnx"
+if not os.path.exists(MIDAS_ONNX_PATH):
+    print("Downloading MiDaS v2.1 small ONNX model...")
+    urllib.request.urlretrieve(MIDAS_ONNX_URL, MIDAS_ONNX_PATH)
+
+midas_net = cv2.dnn.readNetFromONNX(MIDAS_ONNX_PATH)
+
+# Shared cache for async depth and face detection
+last_depth_map = None
+last_depth_lock = threading.Lock()
+last_face_boxes = []
+last_face_lock = threading.Lock()
+
+# Async depth thread
+class DepthThread(threading.Thread):
+    def __init__(self, camera):
+        super().__init__(daemon=True)
+        self.camera = camera
+        self.running = True
+    def run(self):
+        global last_depth_map
+        while self.running:
+            ret, frame = self.camera.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            # Preprocess for MiDaS
+            input_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            input_img = cv2.resize(input_img, (256, 256))
+            blob = cv2.dnn.blobFromImage(input_img, 1/255.0, (256, 256), mean=(0,0,0), swapRB=True, crop=False)
+            midas_net.setInput(blob)
+            depth = midas_net.forward()[0,0]
+            depth = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
+            depth = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            depth_color = cv2.applyColorMap(depth, cv2.COLORMAP_JET)
+            with last_depth_lock:
+                last_depth_map = depth_color
+            time.sleep(0.03)  # ~30 FPS
+
+depth_thread = DepthThread(camera)
+depth_thread.start()
+
+# Async face detection thread
+class FaceThread(threading.Thread):
+    def __init__(self, camera):
+        super().__init__(daemon=True)
+        self.camera = camera
+        self.running = True
+        self.frame_count = 0
+    def run(self):
+        global last_face_boxes
+        while self.running:
+            ret, frame = self.camera.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            self.frame_count += 1
+            if self.frame_count % 3 != 0:
+                time.sleep(0.01)
+                continue
+            small = cv2.resize(frame, (320, 180))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+            boxes = []
+            for (x, y, w, h) in faces:
+                # Scale boxes back to full frame
+                fx = frame.shape[1] / 320
+                fy = frame.shape[0] / 180
+                boxes.append((int(x*fx), int(y*fy), int(w*fx), int(h*fy)))
+            with last_face_lock:
+                last_face_boxes = boxes
+            time.sleep(0.03)
+
+face_thread = FaceThread(camera)
+face_thread.start()
 
 # --- Utility Functions ---
 def play_audio(file_path, duration=None):
@@ -188,33 +267,27 @@ def generate_frames():
         ret, frame = camera.read()
         if not ret:
             break
-        # Flip the frame for upside-down camera (like v1)
         frame = cv2.flip(frame, -1)
         # Depth perception mode
         with depth_perception_lock:
             show_depth = depth_perception_enabled
         if show_depth:
-            # Simple monocular depth effect: use Laplacian edge magnitude as a fake depth map
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            depth = cv2.Laplacian(gray, cv2.CV_64F)
-            depth = np.absolute(depth)
-            depth = np.uint8(255 * depth / np.max(depth)) if np.max(depth) > 0 else np.zeros_like(gray)
-            depth_color = cv2.applyColorMap(depth, cv2.COLORMAP_JET)
-            frame = cv2.addWeighted(frame, 0.4, depth_color, 0.6, 0)
+            with last_depth_lock:
+                if last_depth_map is not None:
+                    depth_color = cv2.resize(last_depth_map, (frame.shape[1], frame.shape[0]))
+                    frame = cv2.addWeighted(frame, 0.4, depth_color, 0.6, 0)
         # Face detection mode
         with face_detection_lock:
             detect_faces = face_detection_enabled
         if detect_faces and not show_depth:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-            for (x, y, w, h) in faces:
-                # Blue box: #4e8cff (BGR: 255, 142, 72)
+            with last_face_lock:
+                boxes = list(last_face_boxes)
+            for (x, y, w, h) in boxes:
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 142, 72), 4)
                 overlay = frame.copy()
                 cv2.rectangle(overlay, (x, y), (x+w, y+h), (255, 142, 72), -1)
                 alpha = 0.15
                 cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-        # Stream the full high-res frame
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
