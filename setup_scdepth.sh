@@ -1,33 +1,33 @@
 #!/bin/bash
 set -e
 
-# 1. Install required Python packages
-pip install opencv-python onnxruntime numpy
-
-# 2. Clone the ONNX-SCDepth-Monocular-Depth-Estimation repo
+echo "=== Cloning ONNX-SCDepth-Monocular-Depth-Estimation repo ==="
 if [ ! -d "ONNX-SCDepth-Monocular-Depth-Estimation" ]; then
     git clone https://github.com/ibaiGorordo/ONNX-SCDepth-Monocular-Depth-Estimation.git
 fi
 
-# 3. Download pre-converted ONNX model if available
-MODEL_URL="https://huggingface.co/ibaiGorordo/SCDepth-ONNX/resolve/main/sc_depth_v3_nyu_sim.onnx"
-MODEL_DIR="models"
-MODEL_PATH="$MODEL_DIR/sc_depth_v3_nyu_sim.onnx"
+echo "=== Copying your inference.py into the repo ==="
+cp inference.py ONNX-SCDepth-Monocular-Depth-Estimation/inference.py
 
-mkdir -p "$MODEL_DIR"
+cd ONNX-SCDepth-Monocular-Depth-Estimation
 
-if [ ! -f "$MODEL_PATH" ]; then
-    echo "Downloading SC-Depth ONNX model..."
-    wget -O "$MODEL_PATH" "$MODEL_URL" || {
-        echo "Failed to download ONNX model. Please download it manually from $MODEL_URL and place it in the models/ directory.";
-        exit 1;
-    }
-else
-    echo "ONNX model already exists at $MODEL_PATH"
+# Download the PyTorch model if not present (example for NYU, adjust URL if needed)
+if [ ! -f "sc_depth_v3_nyu.pth" ]; then
+    echo "Downloading PyTorch model (NYU) ..."
+    wget -O sc_depth_v3_nyu.pth https://github.com/JiawangBian/sc_depth_pl/releases/download/v3/sc_depth_v3_nyu.pth
 fi
 
-# 4. Clean up (optional)
-# rm -rf ONNX-SCDepth-Monocular-Depth-Estimation
+echo "=== Exporting ONNX model ==="
+python inference.py
+
+echo "=== Simplifying ONNX model ==="
+onnxsim sc_depth_v3_nyu.onnx sc_depth_v3_nyu_sim.onnx
+
+cd ..
+
+echo "=== Copying ONNX model to models/ directory ==="
+mkdir -p models
+cp ONNX-SCDepth-Monocular-Depth-Estimation/sc_depth_v3_nyu_sim.onnx models/
 
 echo "=== SC-Depth ONNX setup complete! ==="
-echo "Model is ready at $MODEL_PATH." 
+echo "Model is ready at models/sc_depth_v3_nyu_sim.onnx."
