@@ -2,7 +2,7 @@
 set -e
 
 # 1. Install required Python packages
-pip install opencv-python onnxruntime numpy
+pip install opencv-python onnxruntime numpy --break-system-packages
 
 # 2. Clone the ONNX-SCDepth-Monocular-Depth-Estimation repo
 if [ ! -d "ONNX-SCDepth-Monocular-Depth-Estimation" ]; then
