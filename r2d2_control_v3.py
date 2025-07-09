@@ -1,0 +1,433 @@
+import os
+import time
+import cv2
+import numpy as np
+import threading
+from flask import Flask, Response, render_template_string, request
+import subprocess
+import random
+import RPi.GPIO as GPIO
+
+app = Flask(__name__)
+
+# Motor Initialization
+from gpiozero import Motor
+right_motor = Motor(forward=27, backward=17, enable=12)
+left_motor = Motor(forward=22, backward=23, enable=13)
+
+# Head Servo Initialization
+SERVO_PIN = 18  # BCM numbering
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(SERVO_PIN, GPIO.OUT)
+pwm = GPIO.PWM(SERVO_PIN, 50)
+pwm.start(0)
+
+SERVO_POSITIONS = {
+    'left': 20,
+    'left-center': 50,
+    'center': 80,
+    'right-center': 110,
+    'right': 140
+}
+current_servo_position = 'center'
+servo_lock = threading.Lock()
+
+# Camera Initialization
+camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
+if not camera.isOpened():
+    print("Error: Could not open camera.")
+    exit()
+# Zoom out: set a wider field of view if possible
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+running = True
+audio_lock = threading.Lock()
+audio_process = None
+
+# Motor control state
+current_throttle = 0.0
+current_steering = 0.0
+MOTOR_UPDATE_INTERVAL = 0.05  # seconds
+
+# --- Utility Functions ---
+def play_audio(file_path, duration=None):
+    global audio_process
+    with audio_lock:
+        if audio_process:
+            audio_process.terminate()
+            audio_process.wait()
+        cmd = ["mpg123", "-a", "hw:1,0", "-q", file_path]
+        audio_process = subprocess.Popen(cmd)
+        if duration:
+            time.sleep(duration)
+            audio_process.terminate()
+            audio_process.wait()
+
+def angle_to_duty(angle):
+    return 2.5 + (angle / 180.0) * 10.0
+
+def set_servo_position(position_name):
+    global current_servo_position
+    angle = SERVO_POSITIONS.get(position_name, 80)
+    duty = angle_to_duty(angle)
+    with servo_lock:
+        pwm.ChangeDutyCycle(duty)
+        time.sleep(0.3)
+        pwm.ChangeDutyCycle(0)
+    current_servo_position = position_name
+
+def cleanup():
+    global running
+    running = False
+    print("Stopping motors and releasing camera")
+    try:
+        left_motor.stop()
+    except Exception:
+        pass
+    try:
+        right_motor.stop()
+    except Exception:
+        pass
+    try:
+        pwm.stop()
+        GPIO.cleanup()
+    except Exception:
+        pass
+    try:
+        camera.release()
+    except Exception:
+        pass
+    try:
+        play_audio("sound2.mp3")
+    except Exception:
+        pass
+    if audio_process:
+        try:
+            audio_process.wait()
+        except Exception:
+            pass
+    print("Cleanup complete")
+
+# --- Threads ---
+def head_servo_control():
+    last_position = None
+    while running:
+        if current_servo_position != last_position:
+            set_servo_position(current_servo_position)
+            last_position = current_servo_position
+        time.sleep(0.05)
+
+def motor_control_loop():
+    global current_throttle, current_steering
+    while running:
+        # Map joystick values to motor speeds
+        throttle = current_throttle  # -1 to 1
+        steering = current_steering  # -1 to 1
+        left_speed = throttle + steering
+        right_speed = throttle - steering
+        left_speed = max(-1, min(1, left_speed))
+        right_speed = max(-1, min(1, right_speed))
+        if left_speed > 0:
+            left_motor.forward(left_speed)
+        elif left_speed < 0:
+            left_motor.backward(-left_speed)
+        else:
+            left_motor.stop()
+        if right_speed > 0:
+            right_motor.forward(right_speed)
+        elif right_speed < 0:
+            right_motor.backward(-right_speed)
+        else:
+            right_motor.stop()
+        time.sleep(MOTOR_UPDATE_INTERVAL)
+
+def play_random_segments():
+    while running:
+        play_audio("sound1.mp3", duration=2)
+        time.sleep(random.uniform(5, 15))
+
+def generate_frames():
+    while running:
+        ret, frame = camera.read()
+        if not ret:
+            break
+        # Flip the frame by 180 degrees
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+        # Optionally, zoom out further by padding the image (if hardware allows)
+        h, w = frame.shape[:2]
+        scale = 0.7  # Show more of the scene
+        nh, nw = int(h * scale), int(w * scale)
+        frame_small = cv2.resize(frame, (nw, nh))
+        pad_top = (h - nh) // 2
+        pad_bottom = h - nh - pad_top
+        pad_left = (w - nw) // 2
+        pad_right = w - nw - pad_left
+        frame_padded = cv2.copyMakeBorder(frame_small, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=[0,0,0])
+        ret, buffer = cv2.imencode('.jpg', frame_padded)
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+# --- Flask Endpoints ---
+@app.route('/')
+def index():
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <title>R2D2 Control Panel</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
+        <style>
+            html, body {
+                height: 100%;
+                margin: 0;
+                padding: 0;
+                background: #181a20;
+                color: #f5f6fa;
+                font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
+                overflow: hidden;
+            }
+            body {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+                width: 100vw;
+            }
+            #main-content {
+                flex: 1 1 auto;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                width: 100vw;
+                overflow: hidden;
+            }
+            #camera-container {
+                width: 100vw;
+                height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: #111217;
+                position: absolute;
+                top: 0; left: 0; right: 0; bottom: 0;
+                z-index: 1;
+            }
+            #camera-feed {
+                width: 100vw;
+                height: 100vh;
+                object-fit: cover;
+                background: #000;
+                display: block;
+            }
+            #joystick-container {
+                position: absolute;
+                top: 40px;
+                left: 40px;
+                z-index: 3;
+                width: 140px;
+                height: 140px;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            #servo-controls {
+                position: absolute;
+                bottom: 40px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 2;
+                display: flex;
+                gap: 18px;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                padding: 18px 32px;
+            }
+            .servo-btn {
+                font-size: 1.2rem;
+                font-weight: 500;
+                color: #f5f6fa;
+                background: linear-gradient(90deg, #23242a 0%, #232a3a 100%);
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                cursor: pointer;
+                transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+                outline: none;
+                box-shadow: 0 2px 8px 0 #0006;
+                letter-spacing: 0.04em;
+            }
+            .servo-btn.selected, .servo-btn:hover {
+                background: linear-gradient(90deg, #4e8cff 0%, #1e3c72 100%);
+                color: #fff;
+                box-shadow: 0 4px 16px 0 #4e8cff44;
+            }
+            #shutdown-btn {
+                position: absolute;
+                bottom: 40px;
+                right: 40px;
+                z-index: 3;
+                background: linear-gradient(90deg, #ff3b3b 0%, #a80000 100%);
+                color: #fff;
+                font-size: 1.1rem;
+                font-weight: 600;
+                border: none;
+                border-radius: 8px;
+                padding: 16px 32px;
+                cursor: pointer;
+                box-shadow: 0 2px 12px 0 #a8000055;
+                transition: background 0.2s, box-shadow 0.2s;
+            }
+            #shutdown-btn:hover {
+                background: linear-gradient(90deg, #a80000 0%, #ff3b3b 100%);
+                box-shadow: 0 4px 24px 0 #ff3b3b55;
+            }
+            @media (max-width: 900px) {
+                #servo-controls {
+                    flex-direction: column;
+                    bottom: 20px;
+                    padding: 12px 10px;
+                    gap: 10px;
+                }
+                .servo-btn {
+                    font-size: 1rem;
+                    padding: 10px 12px;
+                }
+                #shutdown-btn {
+                    bottom: 10px;
+                    right: 10px;
+                    padding: 10px 18px;
+                    font-size: 1rem;
+                }
+                #joystick-container {
+                    top: 10px;
+                    left: 10px;
+                    width: 90px;
+                    height: 90px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div id="main-content">
+            <div id="camera-container">
+                <img id="camera-feed" src="{{ url_for('video_feed') }}" alt="Camera Feed" />
+            </div>
+            <div id="joystick-container">
+                <div id="joystick"></div>
+            </div>
+            <div id="servo-controls">
+                <button class="servo-btn" data-pos="left">Left</button>
+                <button class="servo-btn" data-pos="left-center">Left-Center</button>
+                <button class="servo-btn" data-pos="center">Center</button>
+                <button class="servo-btn" data-pos="right-center">Right-Center</button>
+                <button class="servo-btn" data-pos="right">Right</button>
+            </div>
+            <button id="shutdown-btn">Shutdown</button>
+        </div>
+        <script>
+            // Joystick logic using nipplejs
+            var throttle = 0.0;
+            var steering = 0.0;
+            var joystick = nipplejs.create({
+                zone: document.getElementById('joystick'),
+                mode: 'static',
+                position: {left: '50%', top: '50%'},
+                color: 'blue',
+                size: 90
+            });
+            function sendJoystick(throttle, steering) {
+                $.post('/joystick', {throttle: throttle, steering: steering});
+            }
+            joystick.on('move', function(evt, data) {
+                if (data && data.distance) {
+                    var angle = data.angle ? data.angle.radian : 0;
+                    var dist = Math.min(data.distance, 50);
+                    var norm = dist / 50;
+                    var x = Math.cos(angle) * norm;
+                    var y = Math.sin(angle) * norm;
+                    // y: up is -1, down is 1 (invert for throttle)
+                    sendJoystick(-y, x);
+                }
+            });
+            joystick.on('end', function() {
+                sendJoystick(0, 0);
+            });
+            // Servo UI logic
+            function setServoPosition(pos) {
+                $.post('/set_servo', {position: pos}, function() {
+                    $(".servo-btn").removeClass('selected');
+                    $(`.servo-btn[data-pos='${pos}']`).addClass('selected');
+                });
+            }
+            $('.servo-btn').click(function() {
+                var pos = $(this).data('pos');
+                setServoPosition(pos);
+            });
+            $(function() {
+                setServoPosition('{{ current_servo_position }}');
+            });
+            // Shutdown button logic
+            $('#shutdown-btn').click(function() {
+                if (confirm('Are you sure you want to shutdown the server?')) {
+                    $.post('/shutdown', function() {
+                        $('#shutdown-btn').text('Shutting down...').prop('disabled', true);
+                    });
+                }
+            });
+        </script>
+    </body>
+    </html>
+    ''', current_servo_position=current_servo_position)
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/set_servo', methods=['POST'])
+def set_servo():
+    global current_servo_position
+    pos = request.form.get('position')
+    if pos in SERVO_POSITIONS:
+        current_servo_position = pos
+    return 'OK'
+
+@app.route('/joystick', methods=['POST'])
+def joystick():
+    global current_throttle, current_steering
+    try:
+        current_throttle = float(request.form.get('throttle', 0.0))
+        current_steering = float(request.form.get('steering', 0.0))
+    except Exception:
+        current_throttle = 0.0
+        current_steering = 0.0
+    return 'OK'
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    cleanup()
+    os._exit(0)
+
+if __name__ == '__main__':
+    try:
+        print("Initializing motors and starting threads")
+        head_servo_thread = threading.Thread(target=head_servo_control, daemon=True)
+        motor_thread = threading.Thread(target=motor_control_loop, daemon=True)
+        random_sound_thread = threading.Thread(target=play_random_segments, daemon=True)
+        head_servo_thread.start()
+        motor_thread.start()
+        random_sound_thread.start()
+        print("Threads started")
+        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user. Exiting...")
+    finally:
+        cleanup() 
