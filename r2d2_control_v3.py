@@ -50,6 +50,18 @@ current_throttle = 0.0
 current_steering = 0.0
 MOTOR_UPDATE_INTERVAL = 0.05  # seconds
 
+# Deadzone logic
+DEAD_ZONE = 0.2  # 20% dead zone
+def apply_dead_zone(value, dead_zone):
+    if abs(value) < dead_zone:
+        return 0
+    return (value - dead_zone * (1 if value > 0 else -1)) / (1 - dead_zone)
+
+# Motor arming state
+default_armed = False
+motors_armed = default_armed
+motors_armed_lock = threading.Lock()
+
 # --- Utility Functions ---
 def play_audio(file_path, duration=None):
     global audio_process
@@ -119,8 +131,15 @@ def head_servo_control():
         time.sleep(0.05)
 
 def motor_control_loop():
-    global current_throttle, current_steering
+    global current_throttle, current_steering, motors_armed
     while running:
+        with motors_armed_lock:
+            armed = motors_armed
+        if not armed:
+            left_motor.stop()
+            right_motor.stop()
+            time.sleep(MOTOR_UPDATE_INTERVAL)
+            continue
         # Map joystick values to motor speeds
         throttle = current_throttle  # -1 to 1
         steering = current_steering  # -1 to 1
@@ -154,17 +173,8 @@ def generate_frames():
             break
         # Flip the frame by 180 degrees
         frame = cv2.rotate(frame, cv2.ROTATE_180)
-        # Optionally, zoom out further by padding the image (if hardware allows)
-        h, w = frame.shape[:2]
-        scale = 0.7  # Show more of the scene
-        nh, nw = int(h * scale), int(w * scale)
-        frame_small = cv2.resize(frame, (nw, nh))
-        pad_top = (h - nh) // 2
-        pad_bottom = h - nh - pad_top
-        pad_left = (w - nw) // 2
-        pad_right = w - nw - pad_left
-        frame_padded = cv2.copyMakeBorder(frame_small, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=[0,0,0])
-        ret, buffer = cv2.imencode('.jpg', frame_padded)
+        # Transmit the full camera image (no zoom/padding)
+        ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
@@ -324,6 +334,13 @@ def index():
             <div id="joystick-container">
                 <div id="joystick"></div>
             </div>
+            <div id="arm-switch-container">
+                <label class="switch">
+                  <input type="checkbox" id="arm-switch">
+                  <span class="slider"></span>
+                </label>
+                <span id="arm-label">Motors Disarmed</span>
+            </div>
             <div id="servo-controls">
                 <button class="servo-btn" data-pos="left">Left</button>
                 <button class="servo-btn" data-pos="left-center">Left-Center</button>
@@ -375,6 +392,25 @@ def index():
             $(function() {
                 setServoPosition('{{ current_servo_position }}');
             });
+            // Arm/disarm switch logic
+            var armSwitch = document.getElementById('arm-switch');
+            var armLabel = document.getElementById('arm-label');
+            function setArmState(armed) {
+                $.post('/arm', {state: armed ? 'true' : 'false'});
+                armLabel.textContent = armed ? 'Motors Armed' : 'Motors Disarmed';
+                if (armed) {
+                    armLabel.style.color = '#4e8cff';
+                } else {
+                    armLabel.style.color = '#f5f6fa';
+                }
+            }
+            armSwitch.addEventListener('change', function() {
+                setArmState(armSwitch.checked);
+            });
+            // Set initial state
+            setArmState(
+                {{ 'true' if motors_armed else 'false' }}
+            );
             // Shutdown button logic
             $('#shutdown-btn').click(function() {
                 if (confirm('Are you sure you want to shutdown the server?')) {
@@ -404,11 +440,25 @@ def set_servo():
 def joystick():
     global current_throttle, current_steering
     try:
-        current_throttle = float(request.form.get('throttle', 0.0))
-        current_steering = float(request.form.get('steering', 0.0))
+        throttle = float(request.form.get('throttle', 0.0))
+        steering = float(request.form.get('steering', 0.0))
+        # Apply deadzone and clamp
+        current_throttle = max(-1, min(1, apply_dead_zone(throttle, DEAD_ZONE)))
+        current_steering = max(-1, min(1, apply_dead_zone(steering, DEAD_ZONE)))
     except Exception:
         current_throttle = 0.0
         current_steering = 0.0
+    return 'OK'
+
+@app.route('/arm', methods=['POST'])
+def arm():
+    global motors_armed
+    state = request.form.get('state')
+    with motors_armed_lock:
+        if state == 'true':
+            motors_armed = True
+        else:
+            motors_armed = False
     return 'OK'
 
 @app.route('/shutdown', methods=['POST'])
