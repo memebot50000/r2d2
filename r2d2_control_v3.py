@@ -12,8 +12,8 @@ app = Flask(__name__)
 
 # Motor Initialization
 from gpiozero import Motor
-right_motor = Motor(forward=27, backward=17, enable=12)
-left_motor = Motor(forward=22, backward=23, enable=13)
+left_motor = Motor(forward=27, backward=17, enable=12)
+right_motor = Motor(forward=22, backward=23, enable=13)
 
 # Head Servo Initialization
 SERVO_PIN = 18  # BCM numbering
@@ -40,6 +40,19 @@ if not camera.isOpened():
 # Zoom out: set a wider field of view if possible
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+# Try to set focus to auto (if supported)
+try:
+    camera.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+except Exception:
+    pass
+
+# Face detection setup
+cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
+if not os.path.isfile(cascade_path):
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+face_cascade = cv2.CascadeClassifier(cascade_path)
+face_detection_enabled = False
+face_detection_lock = threading.Lock()
 
 running = True
 audio_lock = threading.Lock()
@@ -173,6 +186,20 @@ def generate_frames():
             break
         # Flip the frame for upside-down camera (like v1)
         frame = cv2.flip(frame, -1)
+        # Face detection mode
+        with face_detection_lock:
+            detect_faces = face_detection_enabled
+        if detect_faces:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            for (x, y, w, h) in faces:
+                # Themed box: blue border, shadow, rounded corners
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (78, 140, 255), 4)  # BGR for #4e8cff
+                # Optionally, add a semi-transparent overlay
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (x, y), (x+w, y+h), (78, 140, 255), -1)
+                alpha = 0.15
+                cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
         # Stream the full high-res frame
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
@@ -358,6 +385,26 @@ def index():
                 background: linear-gradient(90deg, #a80000 0%, #ff3b3b 100%);
                 box-shadow: 0 4px 24px 0 #ff3b3b55;
             }
+            #face-detect-switch-container {
+                position: absolute;
+                top: 260px;
+                left: 40px;
+                z-index: 4;
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                padding: 14px 24px;
+            }
+            #face-detect-label {
+                font-size: 1.1rem;
+                font-weight: 500;
+                color: #f5f6fa;
+                letter-spacing: 0.04em;
+                margin-left: 8px;
+            }
             @media (max-width: 900px) {
                 #servo-controls {
                     flex-direction: column;
@@ -399,6 +446,13 @@ def index():
                 </label>
                 <span id="arm-label">Motors Disarmed</span>
             </div>
+            <div id="face-detect-switch-container">
+                <label class="switch">
+                  <input type="checkbox" id="face-detect-switch">
+                  <span class="slider"></span>
+                </label>
+                <span id="face-detect-label">Face Detection Off</span>
+            </div>
             <div id="servo-controls">
                 <button class="servo-btn" data-pos="left">Left</button>
                 <button class="servo-btn" data-pos="left-center">Left-Center</button>
@@ -416,7 +470,7 @@ def index():
                 zone: document.getElementById('joystick'),
                 mode: 'static',
                 position: {left: '50%', top: '50%'},
-                color: 'blue',
+                color: '#4e8cff',
                 size: 90
             });
             function sendJoystick(throttle, steering) {
@@ -469,6 +523,23 @@ def index():
             setArmState(
                 {{ 'true' if motors_armed else 'false' }}
             );
+            // Face detection switch logic
+            var faceSwitch = document.getElementById('face-detect-switch');
+            var faceLabel = document.getElementById('face-detect-label');
+            function setFaceDetectionState(enabled) {
+                $.post('/face_detection', {state: enabled ? 'true' : 'false'});
+                faceLabel.textContent = enabled ? 'Face Detection On' : 'Face Detection Off';
+                if (enabled) {
+                    faceLabel.style.color = '#4e8cff';
+                } else {
+                    faceLabel.style.color = '#f5f6fa';
+                }
+            }
+            faceSwitch.addEventListener('change', function() {
+                setFaceDetectionState(faceSwitch.checked);
+            });
+            // Set initial state
+            setFaceDetectionState(false);
             // Shutdown button logic
             $('#shutdown-btn').click(function() {
                 if (confirm('Are you sure you want to shutdown the server?')) {
@@ -517,6 +588,14 @@ def arm():
             motors_armed = True
         else:
             motors_armed = False
+    return 'OK'
+
+@app.route('/face_detection', methods=['POST'])
+def face_detection():
+    global face_detection_enabled
+    state = request.form.get('state')
+    with face_detection_lock:
+        face_detection_enabled = (state == 'true')
     return 'OK'
 
 @app.route('/shutdown', methods=['POST'])
