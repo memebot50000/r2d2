@@ -1,3 +1,7 @@
+# NOTE: You must add the Depth Anything model definition files from https://github.com/LiheYoung/Depth-Anything
+# Place dpt.py and any required files in a depth_anything/ directory in your project root.
+# This code assumes you have depth_anything_v2_vits.pth in the project root.
+
 import os
 import time
 import cv2
@@ -8,8 +12,29 @@ import subprocess
 import random
 import RPi.GPIO as GPIO
 import urllib.request
+import onnxruntime as ort
 
 app = Flask(__name__)
+
+# --- SC-Depth ONNX setup ---
+SCDEPTH_ONNX_PATH = "models/sc_depth_v3_nyu_sim.onnx"
+ort_session = ort.InferenceSession(SCDEPTH_ONNX_PATH, providers=['CPUExecutionProvider'])
+
+def estimate_depth_scdepth(frame):
+    # Preprocess: resize to 384x384, normalize to [0,1], BGR->RGB
+    input_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    input_img = cv2.resize(input_img, (384, 384))
+    input_img = input_img.astype(np.float32) / 255.0
+    input_img = np.transpose(input_img, (2, 0, 1))[None, ...]  # (1,3,384,384)
+    # Run inference
+    ort_inputs = {ort_session.get_inputs()[0].name: input_img}
+    ort_outs = ort_session.run(None, ort_inputs)
+    depth = ort_outs[0][0, 0]
+    # Postprocess: resize to original frame, normalize, colorize
+    depth = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
+    depth = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    depth_color = cv2.applyColorMap(depth, cv2.COLORMAP_JET)
+    return depth_color
 
 # Motor Initialization
 from gpiozero import Motor
@@ -80,22 +105,13 @@ motors_armed_lock = threading.Lock()
 depth_perception_enabled = False
 depth_perception_lock = threading.Lock()
 
-# --- MiDaS neural network setup for monocular depth ---
-MIDAS_ONNX_URL = "https://github.com/isl-org/MiDaS/releases/download/v2_1_small/model-small.onnx"
-MIDAS_ONNX_PATH = "midas_v21_small.onnx"
-if not os.path.exists(MIDAS_ONNX_PATH):
-    print("Downloading MiDaS v2.1 small ONNX model...")
-    urllib.request.urlretrieve(MIDAS_ONNX_URL, MIDAS_ONNX_PATH)
-
-midas_net = cv2.dnn.readNetFromONNX(MIDAS_ONNX_PATH)
-
 # Shared cache for async depth and face detection
 last_depth_map = None
 last_depth_lock = threading.Lock()
 last_face_boxes = []
 last_face_lock = threading.Lock()
 
-# Async depth thread
+# Async depth thread (ONNX SC-Depth)
 class DepthThread(threading.Thread):
     def __init__(self, camera):
         super().__init__(daemon=True)
@@ -108,15 +124,7 @@ class DepthThread(threading.Thread):
             if not ret:
                 time.sleep(0.01)
                 continue
-            # Preprocess for MiDaS
-            input_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            input_img = cv2.resize(input_img, (256, 256))
-            blob = cv2.dnn.blobFromImage(input_img, 1/255.0, (256, 256), mean=(0,0,0), swapRB=True, crop=False)
-            midas_net.setInput(blob)
-            depth = midas_net.forward()[0,0]
-            depth = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
-            depth = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-            depth_color = cv2.applyColorMap(depth, cv2.COLORMAP_JET)
+            depth_color = estimate_depth_scdepth(frame)
             with last_depth_lock:
                 last_depth_map = depth_color
             time.sleep(0.03)  # ~30 FPS
