@@ -138,6 +138,9 @@ motors_armed_lock = threading.Lock()
 audio_lock = threading.Lock()
 audio_process = None
 
+# Global running flag for threads
+running = True
+
 # --- Utility Functions ---
 def play_audio(file_path, duration=None):
     global audio_process
