@@ -57,6 +57,10 @@ cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.
 if not os.path.isfile(cascade_path):
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 face_cascade = cv2.CascadeClassifier(cascade_path)
+print("Cascade loaded:", not face_cascade.empty())
+if face_cascade.empty():
+    print(f"Error: Could not load face cascade from {cascade_path}")
+    exit(1)
 face_detection_enabled = False
 face_detection_lock = threading.Lock()
 
