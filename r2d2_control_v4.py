@@ -48,6 +48,10 @@ try:
 except Exception:
     pass
 
+# Shared frame buffer for camera
+shared_frame = None
+shared_frame_lock = threading.Lock()
+
 # Face detection setup
 cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
 if not os.path.isfile(cascade_path):
@@ -56,9 +60,126 @@ face_cascade = cv2.CascadeClassifier(cascade_path)
 face_detection_enabled = False
 face_detection_lock = threading.Lock()
 
-running = True
-audio_lock = threading.Lock()
-audio_process = None
+# Object detection setup
+object_detection_enabled = False
+object_detection_lock = threading.Lock()
+
+# Load MobileNet SSD model for object detection
+prototxt_path = os.path.join(os.path.dirname(__file__), 'MobileNetSSD_deploy.prototxt.txt')
+caffemodel_path = os.path.join(os.path.dirname(__file__), 'MobileNetSSD_deploy.caffemodel')
+if os.path.isfile(prototxt_path) and os.path.isfile(caffemodel_path):
+    object_net = cv2.dnn.readNetFromCaffe(prototxt_path, caffemodel_path)
+    OBJECT_CLASSES = [
+        "background", "aeroplane", "bicycle", "bird", "boat",
+        "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+        "dog", "horse", "motorbike", "person", "pottedplant",
+        "sheep", "sofa", "train", "tvmonitor"
+    ]
+else:
+    object_net = None
+    OBJECT_CLASSES = []
+
+# Shared cache for async face detection
+last_face_boxes = []
+last_face_lock = threading.Lock()
+
+# Shared cache for async object detection
+last_object_boxes = []  # List of (x, y, w, h, class_name, confidence)
+last_object_lock = threading.Lock()
+
+# Camera reader thread
+class CameraReaderThread(threading.Thread):
+    def __init__(self, camera):
+        super().__init__(daemon=True)
+        self.camera = camera
+        self.running = True
+    def run(self):
+        global shared_frame
+        while self.running:
+            ret, frame = self.camera.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            with shared_frame_lock:
+                shared_frame = frame.copy()
+            time.sleep(0.01)
+
+camera_reader_thread = CameraReaderThread(camera)
+camera_reader_thread.start()
+
+# Async face detection thread
+class FaceThread(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.running = True
+        self.frame_count = 0
+    def run(self):
+        global last_face_boxes
+        while self.running:
+            with shared_frame_lock:
+                frame = shared_frame.copy() if shared_frame is not None else None
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            self.frame_count += 1
+            if self.frame_count % 3 != 0:
+                time.sleep(0.01)
+                continue
+            small = cv2.resize(frame, (320, 180))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+            boxes = []
+            for (x, y, w, h) in faces:
+                fx = frame.shape[1] / 320
+                fy = frame.shape[0] / 180
+                boxes.append((int(x*fx), int(y*fy), int(w*fx), int(h*fy)))
+            with last_face_lock:
+                last_face_boxes = boxes
+            time.sleep(0.03)
+
+face_thread = FaceThread()
+face_thread.start()
+
+# Async object detection thread
+class ObjectThread(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.running = True
+        self.frame_count = 0
+    def run(self):
+        global last_object_boxes
+        if object_net is None:
+            return
+        while self.running:
+            with shared_frame_lock:
+                frame = shared_frame.copy() if shared_frame is not None else None
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            self.frame_count += 1
+            if self.frame_count % 3 != 0:
+                time.sleep(0.01)
+                continue
+            (h, w) = frame.shape[:2]
+            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
+            object_net.setInput(blob)
+            detections = object_net.forward()
+            boxes = []
+            for i in range(detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
+                if confidence > 0.5:
+                    idx = int(detections[0, 0, i, 1])
+                    if idx < len(OBJECT_CLASSES):
+                        class_name = OBJECT_CLASSES[idx]
+                        box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                        (startX, startY, endX, endY) = box.astype("int")
+                        boxes.append((startX, startY, endX-startX, endY-startY, class_name, confidence))
+            with last_object_lock:
+                last_object_boxes = boxes
+            time.sleep(0.05)
+
+object_thread = ObjectThread()
+object_thread.start()
 
 # Motor control state
 current_throttle = 0.0
@@ -77,43 +198,9 @@ default_armed = False
 motors_armed = default_armed
 motors_armed_lock = threading.Lock()
 
-# Shared cache for async face detection
-last_face_boxes = []
-last_face_lock = threading.Lock()
-
-# Async face detection thread
-class FaceThread(threading.Thread):
-    def __init__(self, camera):
-        super().__init__(daemon=True)
-        self.camera = camera
-        self.running = True
-        self.frame_count = 0
-    def run(self):
-        global last_face_boxes
-        while self.running:
-            ret, frame = self.camera.read()
-            if not ret:
-                time.sleep(0.01)
-                continue
-            self.frame_count += 1
-            if self.frame_count % 3 != 0:
-                time.sleep(0.01)
-                continue
-            small = cv2.resize(frame, (320, 180))
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
-            boxes = []
-            for (x, y, w, h) in faces:
-                # Scale boxes back to full frame
-                fx = frame.shape[1] / 320
-                fy = frame.shape[0] / 180
-                boxes.append((int(x*fx), int(y*fy), int(w*fx), int(h*fy)))
-            with last_face_lock:
-                last_face_boxes = boxes
-            time.sleep(0.03)
-
-face_thread = FaceThread(camera)
-face_thread.start()
+# Audio process state
+audio_lock = threading.Lock()
+audio_process = None
 
 # --- Utility Functions ---
 def play_audio(file_path, duration=None):
@@ -221,13 +308,17 @@ def play_random_segments():
 
 def generate_frames():
     while running:
-        ret, frame = camera.read()
-        if not ret:
-            break
+        with shared_frame_lock:
+            frame = shared_frame.copy() if shared_frame is not None else None
+        if frame is None:
+            time.sleep(0.01)
+            continue
         frame = cv2.flip(frame, -1)
         # Face detection mode
         with face_detection_lock:
             detect_faces = face_detection_enabled
+        with object_detection_lock:
+            detect_objects = object_detection_enabled
         if detect_faces:
             with last_face_lock:
                 boxes = list(last_face_boxes)
@@ -237,6 +328,20 @@ def generate_frames():
                 cv2.rectangle(overlay, (x, y), (x+w, y+h), (255, 142, 72), -1)
                 alpha = 0.15
                 cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+        if detect_objects and object_net is not None:
+            with last_object_lock:
+                obj_boxes = list(last_object_boxes)
+            for (x, y, w, h, class_name, confidence) in obj_boxes:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (72, 255, 142), 3)
+                label = f"{class_name} {int(confidence*100)}%"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.6
+                thickness = 2
+                (text_w, text_h), _ = cv2.getTextSize(label, font, font_scale, thickness)
+                # Draw label outside the box (above if possible)
+                text_x = x
+                text_y = y - 10 if y - 10 > text_h else y + h + text_h + 2
+                cv2.putText(frame, label, (text_x, text_y), font, font_scale, (72, 255, 142), thickness, cv2.LINE_AA)
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
@@ -441,6 +546,26 @@ def index():
                 letter-spacing: 0.04em;
                 margin-left: 8px;
             }
+            #object-detect-switch-container {
+                position: absolute;
+                top: 320px;
+                left: 40px;
+                z-index: 4;
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                background: rgba(24,26,32,0.85);
+                border-radius: 18px;
+                box-shadow: 0 4px 32px 0 #000a;
+                padding: 14px 24px;
+            }
+            #object-detect-label {
+                font-size: 1.1rem;
+                font-weight: 500;
+                color: #f5f6fa;
+                letter-spacing: 0.04em;
+                margin-left: 8px;
+            }
             @media (max-width: 900px) {
                 #servo-controls {
                     flex-direction: column;
@@ -488,6 +613,13 @@ def index():
                   <span class="slider"></span>
                 </label>
                 <span id="face-detect-label">Face Detection Off</span>
+            </div>
+            <div id="object-detect-switch-container">
+                <label class="switch">
+                  <input type="checkbox" id="object-detect-switch">
+                  <span class="slider"></span>
+                </label>
+                <span id="object-detect-label">Object Detection Off</span>
             </div>
             <div id="servo-controls">
                 <button class="servo-btn" data-pos="left">Left</button>
@@ -576,6 +708,23 @@ def index():
             });
             // Set initial state
             setFaceDetectionState(false);
+            // Object detection switch logic
+            var objectSwitch = document.getElementById('object-detect-switch');
+            var objectLabel = document.getElementById('object-detect-label');
+            function setObjectDetectionState(enabled) {
+                $.post('/object_detection', {state: enabled ? 'true' : 'false'});
+                objectLabel.textContent = enabled ? 'Object Detection On' : 'Object Detection Off';
+                if (enabled) {
+                    objectLabel.style.color = '#4e8cff';
+                } else {
+                    objectLabel.style.color = '#f5f6fa';
+                }
+            }
+            objectSwitch.addEventListener('change', function() {
+                setObjectDetectionState(objectSwitch.checked);
+            });
+            // Set initial state
+            setObjectDetectionState(false);
             // Shutdown button logic
             $('#shutdown-btn').click(function() {
                 if (confirm('Are you sure you want to shutdown the server?')) {
@@ -632,6 +781,14 @@ def face_detection():
     state = request.form.get('state')
     with face_detection_lock:
         face_detection_enabled = (state == 'true')
+    return 'OK'
+
+@app.route('/object_detection', methods=['POST'])
+def object_detection():
+    global object_detection_enabled
+    state = request.form.get('state')
+    with object_detection_lock:
+        object_detection_enabled = (state == 'true')
     return 'OK'
 
 @app.route('/shutdown', methods=['POST'])
