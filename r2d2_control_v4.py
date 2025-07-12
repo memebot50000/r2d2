@@ -34,12 +34,16 @@ SERVO_POSITIONS = {
 current_servo_position = 'center'
 servo_lock = threading.Lock()
 
-# Camera Initialization
+# Camera and face detection setup (from v1)
+cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
+if not os.path.isfile(cascade_path):
+    print(f"Error: Cascade file not found at {cascade_path}")
+    exit()
+face_cascade = cv2.CascadeClassifier(cascade_path)
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 if not camera.isOpened():
     print("Error: Could not open camera.")
     exit()
-# Zoom out: set a wider field of view if possible
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 # Try to set focus to auto (if supported)
@@ -47,80 +51,6 @@ try:
     camera.set(cv2.CAP_PROP_AUTOFOCUS, 1)
 except Exception:
     pass
-
-# Shared frame buffer for camera
-shared_frame = None
-shared_frame_lock = threading.Lock()
-
-# Face detection setup
-cascade_path = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
-if not os.path.isfile(cascade_path):
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-face_cascade = cv2.CascadeClassifier(cascade_path)
-print("Cascade loaded:", not face_cascade.empty())
-if face_cascade.empty():
-    print(f"Error: Could not load face cascade from {cascade_path}")
-    exit(1)
-face_detection_enabled = False
-face_detection_lock = threading.Lock()
-
-# Shared cache for async face detection
-last_face_boxes = []
-last_face_lock = threading.Lock()
-
-# Camera reader thread
-class CameraReaderThread(threading.Thread):
-    def __init__(self, camera):
-        super().__init__(daemon=True)
-        self.camera = camera
-        self.running = True
-    def run(self):
-        global shared_frame
-        while self.running:
-            ret, frame = self.camera.read()
-            if not ret:
-                time.sleep(0.01)
-                continue
-            with shared_frame_lock:
-                shared_frame = frame.copy()
-            time.sleep(0.01)
-
-camera_reader_thread = CameraReaderThread(camera)
-camera_reader_thread.start()
-
-# Async face detection thread
-class FaceThread(threading.Thread):
-    def __init__(self):
-        super().__init__(daemon=True)
-        self.running = True
-        self.frame_count = 0
-    def run(self):
-        global last_face_boxes
-        while self.running:
-            with shared_frame_lock:
-                frame = shared_frame.copy() if shared_frame is not None else None
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            self.frame_count += 1
-            if self.frame_count % 3 != 0:
-                time.sleep(0.01)
-                continue
-            small = cv2.resize(frame, (320, 180))
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
-            print(f"[FaceThread] Detected {len(faces)} faces")
-            boxes = []
-            for (x, y, w, h) in faces:
-                fx = frame.shape[1] / 320
-                fy = frame.shape[0] / 180
-                boxes.append((int(x*fx), int(y*fy), int(w*fx), int(h*fy)))
-            with last_face_lock:
-                last_face_boxes = boxes
-            time.sleep(0.03)
-
-face_thread = FaceThread()
-face_thread.start()
 
 # Motor control state
 current_throttle = 0.0
@@ -145,6 +75,10 @@ audio_process = None
 
 # Global running flag for threads
 running = True
+
+# Face detection enabled state
+face_detection_enabled = False
+face_detection_lock = threading.Lock()
 
 # --- Utility Functions ---
 def play_audio(file_path, duration=None):
@@ -252,24 +186,22 @@ def play_random_segments():
 
 def generate_frames():
     while running:
-        with shared_frame_lock:
-            frame = shared_frame.copy() if shared_frame is not None else None
-        if frame is None:
+        ret, frame = camera.read()
+        if not ret:
             time.sleep(0.01)
             continue
         frame = cv2.flip(frame, -1)
-        # Face detection mode
         with face_detection_lock:
             detect_faces = face_detection_enabled
         if detect_faces:
-            with last_face_lock:
-                boxes = list(last_face_boxes)
-            for (x, y, w, h) in boxes:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 142, 72), 4)
-                overlay = frame.copy()
-                cv2.rectangle(overlay, (x, y), (x+w, y+h), (255, 142, 72), -1)
-                alpha = 0.15
-                cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                cv2.drawMarker(frame, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
+                cv2.drawMarker(frame, (x+w, y), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
+                cv2.drawMarker(frame, (x, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
+                cv2.drawMarker(frame, (x+w, y+h), (0, 255, 0), cv2.MARKER_CROSS, 10, 2)
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
