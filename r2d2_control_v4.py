@@ -109,6 +109,7 @@ class FaceThread(threading.Thread):
             small = cv2.resize(frame, (320, 180))
             gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+            print(f"[FaceThread] Detected {len(faces)} faces")
             boxes = []
             for (x, y, w, h) in faces:
                 fx = frame.shape[1] / 320
@@ -656,6 +657,7 @@ def arm():
             motors_armed = True
         else:
             motors_armed = False
+    play_audio('sound3.mp3')
     return 'OK'
 
 @app.route('/face_detection', methods=['POST'])
